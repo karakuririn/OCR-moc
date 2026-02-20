@@ -150,7 +150,13 @@
                 cv.addWeighted(mat, 1.5, mat, -0.5, 0, mat);
 
                 // 適応的二値化（文字を浮かび上がらせる）
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 7);
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 15, 10);
+                
+                // 追加：文字を物理的に細くする（潰れ対策の切り札）
+                let M = cv.Mat.ones(2, 2, cv.CV_8U);
+                let anchor = new cv.Point(-1, -1);
+                cv.erode(mat, mat, M, anchor, 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+                M.delete();
                 
                 // デバッグ用表示（ユーザーに枠内を見せる）
                 cv.imshow('canvas-debug', mat);
@@ -176,3 +182,4 @@
     </script>
 </body>
 </html>
+
