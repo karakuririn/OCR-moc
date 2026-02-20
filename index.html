@@ -82,14 +82,16 @@
 
         // 2. Tesseractエンジンの常駐化（スピードアップの要）
         async function initOCR() {
-            ocrStatus.innerText = "OCR: LOADING WORKER...";
-            // 銘板やラベルに特化する場合、英数字のみにするなら 'eng' にすると更に速いです
-            worker = await Tesseract.createWorker('jpn+eng', 1, {
-                cacheMethod: 'readOnly'
+            // 【重要】もし型番（英数字）だけなら 'eng' のみにすると精度が跳ね上がります
+            worker = await Tesseract.createWorker('eng', 1); 
+            
+            await worker.setParameters({
+                // PSM 7: 文字が一行に並んでいると仮定して読む（ラベルに最強）
+                tessedit_pageseg_mode: '7',
+                // 読み取り対象を限定（英数字とハイフンのみなど）
+                // tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-', 
             });
-            ocrStatus.innerText = "OCR: WORKER READY";
-            ocrStatus.className = "text-green-500 text-[8px]";
-            checkEngines();
+            ocrStatus.innerText = "OCR: READY (LABEL MODE)";
         }
 
         function checkEngines() {
@@ -155,7 +157,9 @@
                 // 追加：文字を物理的に細くする（潰れ対策の切り札）
                 let M = cv.Mat.ones(2, 2, cv.CV_8U);
                 let anchor = new cv.Point(-1, -1);
-                cv.erode(mat, mat, M, anchor, 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+                
+                // 文字を1ピクセル太らせて、千切れた線を繋げる
+                cv.dilate(mat, mat, M, anchor, 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
                 M.delete();
                 
                 // デバッグ用表示（ユーザーに枠内を見せる）
@@ -182,4 +186,5 @@
     </script>
 </body>
 </html>
+
 
