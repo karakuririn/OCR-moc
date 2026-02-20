@@ -95,9 +95,9 @@
             ocrStatus.innerText = "OCR: LOADING JPN/ENG...";
             worker = await Tesseract.createWorker('jpn+eng', 1);
 
-            // 【重要】文字が一行に並んでいるラベル用に最適化 (PSM 7)
+            // 【重要】単一のテキストブロックとして認識 (PSM 6)
             await worker.setParameters({
-                tessedit_pageseg_mode: '7',
+                tessedit_pageseg_mode: '6',
             });
 
             ocrStatus.innerText = "OCR: HYBRID READY";
@@ -144,33 +144,37 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR最適化版) ---
+                // --- OpenCV 文字補修プロセス (OCR最適化版 v2) ---
                 let mat = cv.imread(roiCanvas);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 1. 二値化：THRESH_BINARY_INV で「黒背景に白文字」にする
-                // これにより、続く dilate が「文字を太らせる」動作になります
+                // 1. 二値化：反転させて文字を白にする
                 cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 25, 10);
 
-                // 2. 膨張処理 (Dilation)：文字の欠けを繋ぐ
+                // 2. ノイズ除去：小さな点を除去
+                cv.medianBlur(mat, mat, 3);
+
+                // 3. 膨張処理：文字を太らせて繋ぐ
                 let kernel = cv.Mat.ones(2, 2, cv.CV_8U);
                 let anchor = new cv.Point(-1, -1);
                 cv.dilate(mat, mat, kernel, anchor, 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
                 kernel.delete();
 
-                // 3. 平滑化：エッジのジャギーを抑えてOCR誤認を減らす
-                cv.GaussianBlur(mat, mat, new cv.Size(3, 3), 0, 0, cv.BORDER_DEFAULT);
+                // 4. マージン追加：Tesseractは文字が端にあると嫌うため余白を作る
+                let borderedMat = new cv.Mat();
+                cv.copyMakeBorder(mat, borderedMat, 20, 20, 20, 20, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
 
-                // 4. 反転：Tesseractの標準である「白背景に黒文字」に戻す
-                cv.bitwise_not(mat, mat);
+                // 5. 反転：白背景に黒文字に戻す
+                cv.bitwise_not(borderedMat, borderedMat);
 
-                // 5. デバッグ表示とOCR用キャンバスへの反映
-                cv.imshow('canvas-debug', mat);
-                cv.imshow(roiCanvas, mat);
+                // 6. デバッグ表示とOCR用への反映
+                cv.imshow('canvas-debug', borderedMat);
+
+                // OCR用にはdebugCanvasの結果（マージン付き）を渡す
+                const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
+
                 mat.delete();
-
-                // --- OCR 解析 ---
-                const { data: { text } } = await worker.recognize(roiCanvas);
+                borderedMat.delete();
 
                 // 結果のクリーンアップ
                 const cleanText = text.replace(/\s+/g, ' ').trim();
