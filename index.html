@@ -19,7 +19,7 @@
                 LOADING...</span>
             <span id="ocr-status" class="text-slate-500 text-[8px]">OCR: INITIALIZING...</span>
         </div>
-        <span class="text-orange-500 font-black italic tracking-widest">REPAIR MODE v7.0</span>
+        <span class="text-orange-500 font-black italic tracking-widest">REPAIR MODE v5.0</span>
     </div>
 
     <main class="max-w-md mx-auto pt-14 p-4 h-screen flex flex-col">
@@ -172,47 +172,62 @@
                 cv.addWeighted(mat, 2.0, tempBlurred, -1.0, 0, mat);
                 tempBlurred.delete();
 
-                // --- 4. 安定化された角度判定 (Median-Angle Deskew) ---
+                // --- 4. 安定化された角度判定 (Text-Line Deskew) ---
                 let angle = 0;
                 let binaryForAngle = new cv.Mat();
                 cv.threshold(mat, binaryForAngle, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
 
+                // 文字を横方向に強く結合させ、「行」のブロックを作る（日本語特有の隙間を消す）
+                let M_line = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(25, 3));
+                let dilatedLines = new cv.Mat();
+                cv.morphologyEx(binaryForAngle, dilatedLines, cv.MORPH_DILATE, M_line);
+                M_line.delete();
+
                 try {
                     let contours = new cv.MatVector();
                     let hierarchy = new cv.Mat();
-                    cv.findContours(binaryForAngle, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+                    // 結合された「行」の輪郭を取得
+                    cv.findContours(dilatedLines, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
                     let angles = [];
                     for (let i = 0; i < contours.size(); ++i) {
                         let cnt = contours.get(i);
-                        let area = cv.contourArea(cnt);
-                        // 小さすぎるノイズを除去して統計精度を向上
-                        if (area > 50 && area < (mat.cols * mat.rows * 0.1)) {
-                            let rect = cv.minAreaRect(cnt);
-                            let a = rect.angle;
-                            // OpenCVの返り値の仕様を正規化
-                            if (rect.size.width < rect.size.height) {
-                                a = a + 90;
+                        let rect = cv.minAreaRect(cnt);
+
+                        // 明らかなノイズを除外（極端に小さいものや、正方形に近い箱を除外）
+                        // 横長、または縦長（縦書き）の「行」らしいものだけをサンプルにする
+                        if (rect.size.width > 30 && rect.size.height > 10) {
+                            let aspectRatio = Math.max(rect.size.width / rect.size.height, rect.size.height / rect.size.width);
+                            if (aspectRatio > 1.5) { // 行とみなせる細長さがあるか
+                                let a = rect.angle;
+                                // OpenCVの仕様: 角度は水平線と最初の辺のなす角。
+                                // 長辺が水平になるように正規化する
+                                if (rect.size.width < rect.size.height) {
+                                    a = a + 90;
+                                }
+                                // -45度〜+45度に収める
+                                if (a > 45) a -= 90;
+                                if (a < -45) a += 90;
+
+                                angles.push(a);
                             }
-                            // 角度を-45〜45に補正
-                            if (a > 45) a -= 90;
-                            if (a < -45) a += 90;
-                            angles.push(a);
                         }
                     }
 
-                    if (angles.length > 5) {
-                        // 中央値(Median)の計算
+                    // 有効な行が複数見つかった場合のみ、中央値を採用
+                    if (angles.length > 0) {
                         angles.sort((a, b) => a - b);
                         angle = angles[Math.floor(angles.length / 2)];
 
-                        // 【不感帯（デッドゾーン）の設定】
-                        // +/- 2.5度以内の揺れは真正面と判断し、回転させない
-                        if (Math.abs(angle) < 2.5) {
+                        // 【不感帯（デッドゾーン）】
+                        // +/- 3.0度以内の揺れは真正面と判断し、回転させない
+                        if (Math.abs(angle) < 3.0) {
                             angle = 0;
                         }
-                        // 回転の最大値を制限 (お辞儀しすぎ対策)
-                        if (Math.abs(angle) > 20) angle = 0;
+                        // 異常な角度（15度以上など）の回転は防ぐ（誤判定時のお辞儀対策）
+                        if (Math.abs(angle) > 15.0) {
+                            angle = 0;
+                        }
                     }
 
                     contours.delete();
@@ -221,6 +236,7 @@
                     console.warn("Deskew stabilization failed", e);
                 }
                 binaryForAngle.delete();
+                dilatedLines.delete();
 
                 // 角度があれば画像を回転
                 if (Math.abs(angle) > 0) {
