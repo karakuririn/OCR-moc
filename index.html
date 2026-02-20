@@ -1,19 +1,15 @@
 <!DOCTYPE html>
 <html lang="ja">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://docs.opencv.org; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://docs.opencv.org; img-src 'self' data: blob:; connect-src 'self' blob:;">
     <title>RECOVERY OCR v3.2</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-    <script async src="https://docs.opencv.org/4.10.0/opencv.js"
-        onload="addLog('✅ OpenCV Engine Loaded.'); onOpenCvReady();"
-        onerror="addLog('❌ OpenCV CDN Load Failed. Check Console.'); onOpenCvFail();"></script>
+    <script async src="opencv_v1.js" 
+            onload="addLog('✅ OpenCV Engine Loaded.'); onOpenCvReady();" 
+            onerror="addLog('⚠️ OpenCV Missing. Using Basic OCR Mode.'); onOpenCvFail();"></script>
 </head>
-
 <body class="bg-slate-950 text-slate-100 min-h-screen p-4 font-mono text-[10px]">
 
     <header class="max-w-md mx-auto mb-4 border-b border-slate-800 pb-2 flex justify-between">
@@ -22,21 +18,16 @@
     </header>
 
     <div class="max-w-md mx-auto bg-slate-900 rounded-2xl p-2 border border-slate-800 shadow-2xl">
-        <video id="video" autoplay playsinline
-            class="w-full aspect-video rounded-xl bg-black object-cover shadow-inner"></video>
+        <video id="video" autoplay playsinline class="w-full aspect-video rounded-xl bg-black object-cover shadow-inner"></video>
     </div>
 
-    <div class="max-w-md mx-auto mt-4 bg-black border border-slate-800 rounded p-2 h-32 overflow-y-auto text-slate-500 shadow-inner"
-        id="log-console"></div>
+    <div class="max-w-md mx-auto mt-4 bg-black border border-slate-800 rounded p-2 h-32 overflow-y-auto text-slate-500 shadow-inner" id="log-console"></div>
 
     <div class="max-w-md mx-auto mt-4 space-y-4">
-        <button id="scan-btn"
-            class="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-lg shadow-lg active:scale-95 transition-all">
+        <button id="scan-btn" class="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-lg shadow-lg active:scale-95 transition-all">
             スキャン実行
         </button>
-        <div id="ocr-result"
-            class="bg-slate-900 p-4 rounded-xl border border-slate-800 min-h-[5rem] text-xs whitespace-pre-wrap">---
-        </div>
+        <div id="ocr-result" class="bg-slate-900 p-4 rounded-xl border border-slate-800 min-h-[5rem] text-xs whitespace-pre-wrap">---</div>
     </div>
 
     <canvas id="canvas-debug" class="hidden"></canvas>
@@ -90,7 +81,7 @@
                     cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
                     cv.imshow('canvas-debug', dst);
                     src.delete(); dst.delete();
-                } catch (e) {
+                } catch(e) {
                     addLog("⚠️ Filter Error. Falling back...");
                     ctx.drawImage(video, 0, 0); // そのままの画像を使用
                 }
@@ -108,11 +99,10 @@
                 await worker.terminate();
                 document.getElementById('ocr-result').innerText = text.trim() || "(No Text Detected)";
                 addLog("✅ Process Complete.");
-            } catch (e) {
+            } catch(e) {
                 addLog(`❌ OCR Error: ${e.message}`);
             }
         };
     </script>
 </body>
-
 </html>
