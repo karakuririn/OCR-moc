@@ -19,7 +19,7 @@
                 LOADING...</span>
             <span id="ocr-status" class="text-slate-500 text-[8px]">OCR: INITIALIZING...</span>
         </div>
-        <span class="text-orange-500 font-black italic tracking-widest">v5.3</span>
+        <span class="text-orange-500 font-black italic tracking-widest">v5.5</span>
     </div>
 
     <main class="max-w-md mx-auto pt-14 p-4 h-screen flex flex-col">
@@ -144,17 +144,31 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR 正常化版 v5.3：Character Connection) ---
+                // --- OpenCV 文字補修プロセス (OCR 正常化版 v5.5：Japanese Optimization) ---
                 /*
-                 * - [x] 自動傾き補正(Deskew)の実装とUIリブランディング (v5.1)
+                 * - [x] 自動傾き補正(Deskew)の実装
                  * - [x] プロフェッショナル・ポリッシュと堅牢な領域抽出の実装 (v5.2)
                  * - [x] 文字接続強化と内部エラー修正 (v5.3)
+                 * - [x] 背景クリーンアップと認識率の完全復旧 (v5.4)
+                 * - [/] 日本語OCR最適化と精度の底上げ (v5.5) [ ]
                  * - [ ] 最終的な精度検証と完了
                  */
                 let mat = cv.imread(roiCanvas);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 1. 自動傾き補正 (Deskew)
+                // 0. 背景除去 (Top-hat)：黒い靄を物理的に消去
+                let kTop = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(15, 15));
+                let tophat = new cv.Mat();
+                cv.morphologyEx(mat, tophat, cv.MORPH_BLACKHAT, kTop);
+                cv.add(mat, tophat, mat);
+                kTop.delete(); tophat.delete();
+
+                // 1. 強力コントラスト改善 (CLAHE)
+                let clahe = new cv.CLAHE(3.0, new cv.Size(8, 8));
+                clahe.apply(mat, mat);
+                clahe.delete();
+
+                // 2. 自動傾き補正 (Deskew)
                 try {
                     let deskewMat = new cv.Mat();
                     cv.adaptiveThreshold(mat, deskewMat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2);
@@ -166,7 +180,7 @@
                         let allPoints = [];
                         for (let i = 0; i < contoursDeskew.size(); i++) {
                             let cnt = contoursDeskew.get(i);
-                            if (cv.contourArea(cnt) > 20) {
+                            if (cv.contourArea(cnt) > 10) {
                                 for (let j = 0; j < cnt.data32S.length; j += 2) {
                                     allPoints.push({ x: cnt.data32S[j], y: cnt.data32S[j + 1] });
                                 }
@@ -189,27 +203,27 @@
                     deskewMat.delete(); contoursDeskew.delete(); hierarchyDeskew.delete();
                 } catch (e) { console.warn("Deskew failed:", e); }
 
-                // 2. スケーリング (適度な解像度 450px)
-                let targetH = 500;
-                let scale = targetH / mat.rows;
-                let dsize = new cv.Size(Math.round(mat.cols * scale), targetH);
+                // 3. スケーリング (安定解像度 500px)
+                let targetHeight = 500;
+                let scale = targetHeight / mat.rows;
+                let dsize = new cv.Size(Math.round(mat.cols * scale), targetHeight);
                 cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
 
-                // 3. アンシャープマスキング
+                // 4. アンシャープマスキング
                 let blurred = new cv.Mat();
                 cv.GaussianBlur(mat, blurred, new cv.Size(0, 0), 2);
                 cv.addWeighted(mat, 1.6, blurred, -0.6, 0, mat);
                 blurred.delete();
 
-                // 4. 二値化 (THRESH_BINARY_INV)
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 25, 2);
+                // 5. 二値化 (ブロックサイズを大きくして安定化)
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 31, 3);
 
-                // ★ 5. 文字接続強化 (Closing)
-                let kClose = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
+                // 6. 文字接続強化 (Closing)：さらに繊細に(1x1)
+                let kClose = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(1, 1));
                 cv.morphologyEx(mat, mat, cv.MORPH_CLOSE, kClose);
                 kClose.delete();
 
-                // 6. 領域抽出 (Robust Region Extraction)
+                // 7. 領域抽出 (Robust Region Extraction)
                 let finalMat = new cv.Mat();
                 let foundRegion = false;
                 try {
@@ -220,7 +234,7 @@
                         let mnX = mat.cols, mnY = mat.rows, mxX = 0, mxY = 0;
                         for (let i = 0; i < cFinal.size(); ++i) {
                             let rect = cv.boundingRect(cFinal.get(i));
-                            if (rect.width > 3 && rect.height > 3) {
+                            if (rect.width > 2 && rect.height > 2) {
                                 mnX = Math.min(mnX, rect.x); mnY = Math.min(mnY, rect.y);
                                 mxX = Math.max(mxX, rect.x + rect.width); mxY = Math.max(mxY, rect.y + rect.height);
                             }
@@ -238,11 +252,10 @@
 
                 if (!foundRegion) mat.copyTo(finalMat);
 
-                // 7. 白マージン付与と反転
-                cv.copyMakeBorder(finalMat, finalMat, 60, 60, 60, 60, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
-                cv.bitwise_not(finalMat, finalMat);
+                // 8. 白マージン付与と反転
+                cv.copyMakeBorder(finalMat, finalMat, 50, 50, 50, 50, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
 
-                // 8. OCR実行
+                // 9. OCR実行
                 cv.imshow('canvas-debug', finalMat);
                 const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
 
