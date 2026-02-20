@@ -144,36 +144,49 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR最適化版 v4：シャープネス重視) ---
+                // --- OpenCV 文字補修プロセス (OCR最適化版 v5：究極調整) ---
                 let mat = cv.imread(roiCanvas);
 
-                // 1. スケーリング (高さ300px)
-                let scale = 300 / mat.rows;
-                let dsize = new cv.Size(Math.round(mat.cols * scale), 300);
+                // 1. スケーリング (高さ400pxに拡大、より詳細を拾う)
+                let scale = 400 / mat.rows;
+                let dsize = new cv.Size(Math.round(mat.cols * scale), 400);
                 cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
-
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 2. シャープネスフィルタ：文字の境界を際立たせる
-                let kData = [0, -1, 0, -1, 5, -1, 0, -1, 0];
-                let kernelChar = cv.matFromArray(3, 3, cv.CV_32F, kData);
-                cv.filter2D(mat, mat, cv.CV_8U, kernelChar, new cv.Point(-1, -1), 0, cv.BORDER_DEFAULT);
+                // 2. バイラテラルフィルタ：エッジを保持したまま滑らかに
+                let filtered = new cv.Mat();
+                cv.bilateralFilter(mat, filtered, 9, 75, 75, cv.BORDER_DEFAULT);
+                mat.delete(); mat = filtered;
+
+                // 3. シャープネスフィルタ
+                let kernelChar = cv.matFromArray(3, 3, cv.CV_32F, [0, -1, 0, -1, 5, -1, 0, -1, 0]);
+                cv.filter2D(mat, mat, cv.CV_8U, kernelChar);
                 kernelChar.delete();
 
-                // 3. コントラスト強調 (CLAHE)
-                let clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
-                clahe.apply(mat, mat);
-                clahe.delete();
+                // 4. 二値化 (反転：黒背景に白文字)
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 31, 2);
 
-                // 4. 二値化：C=2 に緩和してかすれを拾う
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 2);
+                // 5. 傾き補正 (Deskew)
+                // 白い画素（文字）の点を集めて最小四角形を計算
+                let points = cv.Mat.zeros(mat.rows, mat.cols, cv.CV_8UC1);
+                let nonZero = new cv.Mat();
+                cv.findNonZero(mat, nonZero);
+                let rect = cv.minAreaRect(nonZero);
+                let angle = rect.angle;
+                if (angle < -45) angle = angle + 90;
 
-                // 5. ノイズ除去（ごくわずか）
-                cv.medianBlur(mat, mat, 3);
+                // わずかな傾き（0.5度以上）があれば回転
+                if (Math.abs(angle) > 0.5) {
+                    let center = new cv.Point(mat.cols / 2, mat.rows / 2);
+                    let M = cv.getRotationMatrix2D(center, angle, 1);
+                    cv.warpAffine(mat, mat, M, new cv.Size(mat.cols, mat.rows), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 255));
+                    M.delete();
+                }
+                nonZero.delete(); points.delete();
 
-                // 6. マージン追加 (50pxに拡大)
+                // 6. マージン追加 (60px)
                 let borderedMat = new cv.Mat();
-                cv.copyMakeBorder(mat, borderedMat, 50, 50, 50, 50, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
+                cv.copyMakeBorder(mat, borderedMat, 60, 60, 60, 60, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
 
                 // 7. 反転：白背景に黒文字
                 cv.bitwise_not(borderedMat, borderedMat);
