@@ -1,144 +1,27 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>PRECISION OCR v5.0</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-    <script async src="opencv_v1.js" onload="onOpenCvReady();"></script>
-</head>
-<body class="bg-slate-950 text-slate-100 min-h-screen font-mono text-[10px]">
+<script>
+    // 【変更】エンジンの常駐化（ボタンを押す前に準備を済ませる）
+    let globalWorker = null;
+    async function initWorker() {
+        globalWorker = await Tesseract.createWorker('jpn+eng');
+        addLog("✅ OCR Engine Standby.");
+    }
 
-    <div class="fixed top-0 left-0 right-0 z-50 bg-black/80 backdrop-blur p-2 border-b border-slate-800 flex justify-between">
-        <span id="setup-status" class="text-red-500 font-bold tracking-tighter">AI ENGINE LOADING...</span>
-        <span class="text-slate-500 italic">PRECISION MODE v5.0</span>
-    </div>
-
-    <main class="max-w-md mx-auto pt-10 p-4 space-y-4">
+    // 【変更】スキャン実行部分のロジック
+    scanBtn.onclick = async () => {
+        // 1. ガイド枠の部分だけを切り抜き（クロップ）
+        const cropX = canvas.width * 0.1; // 左右10%を除外
+        const cropY = canvas.height * 0.4; // 上下の中央付近だけ抽出
+        const cropW = canvas.width * 0.8;
+        const cropH = canvas.height * 0.2;
         
-        <div class="relative rounded-3xl overflow-hidden aspect-[4/3] bg-black shadow-2xl border border-slate-800">
-            <video id="video" autoplay playsinline class="w-full h-full object-cover"></video>
-            <div class="absolute inset-0 border-[30px] border-black/40 flex items-center justify-center">
-                <div class="w-full h-16 border-2 border-blue-500/50 rounded flex items-center justify-center">
-                    <div class="w-full h-[1px] bg-blue-500/30 animate-pulse"></div>
-                </div>
-            </div>
-            <div id="loader" class="absolute inset-0 bg-black/80 flex flex-col items-center justify-center hidden">
-                <div class="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                <p id="progress-text" class="mt-4 text-blue-400 font-bold">ANALYZING...</p>
-            </div>
-        </div>
+        const croppedCanvas = document.createElement('canvas');
+        croppedCanvas.width = cropW;
+        croppedCanvas.height = cropH;
+        const croppedCtx = croppedCanvas.getContext('2d');
+        croppedCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-        <div class="bg-slate-900 rounded-xl p-2 border border-slate-800">
-            <p class="text-[8px] text-slate-500 mb-1 uppercase font-bold tracking-widest">AI Vision (Binarized)</p>
-            <canvas id="canvas-debug" class="w-full h-20 bg-black rounded object-contain"></canvas>
-            <p class="text-[7px] text-slate-600 mt-1 italic text-right">※この画像で文字が白く浮き出ていないと認識しません</p>
-        </div>
-
-        <div class="space-y-3">
-            <button id="scan-btn" disabled class="w-full py-5 bg-slate-800 text-slate-500 rounded-2xl font-black text-xl transition-all">
-                ENGINE STANDBY...
-            </button>
-            
-            <div class="bg-slate-900 p-4 rounded-2xl border border-slate-800 min-h-[100px] relative">
-                <label class="absolute -top-2 left-4 px-2 bg-slate-950 text-blue-400 text-[8px] font-bold">DETECTED TEXT</label>
-                <div id="ocr-result" class="text-xs leading-relaxed break-all whitespace-pre-wrap pt-2">読み取り結果がここに表示されます</div>
-            </div>
-        </div>
-
-        <p class="text-center text-[8px] text-slate-600">
-            コツ：ピントを合わせ、反射を避けてガイド枠内に文字を収めてください
-        </p>
-    </main>
-
-    <canvas id="canvas-proc" class="hidden"></canvas>
-
-    <script>
-        const video = document.getElementById('video');
-        const scanBtn = document.getElementById('scan-btn');
-        const ocrResult = document.getElementById('ocr-result');
-        const loader = document.getElementById('loader');
-        const progressText = document.getElementById('progress-text');
-        const debugCanvas = document.getElementById('canvas-debug');
-        const setupStatus = document.getElementById('setup-status');
-
-        let cvReady = false;
-
-        function onOpenCvReady() {
-            cvReady = true;
-            setupStatus.innerText = "● SYSTEM ONLINE";
-            setupStatus.classList.replace('text-red-500', 'text-green-500');
-            scanBtn.disabled = false;
-            scanBtn.innerText = "スキャン実行";
-            scanBtn.classList.replace('bg-slate-800', 'bg-blue-600');
-            scanBtn.classList.replace('text-slate-500', 'text-white');
-        }
-
-        navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
-        }).then(s => video.srcObject = s);
-
-        scanBtn.onclick = async () => {
-            loader.classList.remove('hidden');
-            ocrResult.innerText = "解析中...";
-            
-            try {
-                const canvas = document.getElementById('canvas-proc');
-                const ctx = canvas.getContext('2d');
-                
-                // 1. 高解像度でのキャプチャ（スマホの性能を活かす）
-                const scale = 1.5; // 読み取りサイズを1.5倍に拡張
-                canvas.width = video.videoWidth * scale;
-                canvas.height = video.videoHeight * scale;
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-                // 2. OpenCVによる「超・高精度」前処理
-                if (cvReady) {
-                    let src = cv.imread(canvas);
-                    let dst = new cv.Mat();
-                    
-                    // グレースケール化
-                    cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY, 0);
-                    
-                    // シャープネス強調（アンシャープマスキング的な処理）
-                    // 文字の輪郭をはっきりさせる
-                    cv.GaussianBlur(src, dst, new cv.Size(0, 0), 3);
-                    cv.addWeighted(src, 1.5, dst, -0.5, 0, src);
-
-                    // 適応的二値化（パラメータ調整：ブロックサイズを大きくし、コントラストを強調）
-                    cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 7);
-                    
-                    // デバッグ表示（AIが見ている世界をユーザーに見せる）
-                    cv.imshow('canvas-debug', dst);
-                    
-                    // AIに渡す画像を更新
-                    cv.imshow(canvas, dst);
-                    
-                    src.delete(); dst.delete();
-                }
-
-                // 3. OCR実行
-                const { data: { text } } = await Tesseract.recognize(canvas, 'jpn+eng', {
-                    logger: m => {
-                        if(m.status === 'recognizing text') {
-                            progressText.innerText = `READING: ${Math.round(m.progress * 100)}%`;
-                        }
-                    }
-                });
-
-                // 4. 文脈ハック（不要な改行や記号を掃除）
-                const cleanText = text.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-                ocrResult.innerText = cleanText || "文字が見つかりませんでした";
-
-            } catch (err) {
-                console.error(err);
-                ocrResult.innerText = "エラー: " + err.message;
-            } finally {
-                loader.classList.add('hidden');
-                progressText.innerText = "ANALYZING...";
-            }
-        };
-    </script>
-</body>
-</html>
+        // 2. 切り抜いた「軽い画像」だけを解析に回す
+        const { data: { text } } = await globalWorker.recognize(croppedCanvas);
+        // ...
+    };
+</script>
