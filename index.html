@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>REPAIR OCR v5.4</title>
+    <title>OCR v5.1</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script async src="opencv_v1.js" onload="onOpenCvReady();"></script>
@@ -19,7 +19,7 @@
                 LOADING...</span>
             <span id="ocr-status" class="text-slate-500 text-[8px]">OCR: INITIALIZING...</span>
         </div>
-        <span class="text-orange-500 font-black italic tracking-widest">REPAIR MODE v5.0</span>
+        <span class="text-orange-500 font-black italic tracking-widest">v5.1</span>
     </div>
 
     <main class="max-w-md mx-auto pt-14 p-4 h-screen flex flex-col">
@@ -144,87 +144,99 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR最適化版 v6：最終仕上げ) ---
+                // --- OpenCV 文字補修プロセス (OCR 正常化版 v5.1：Deskew) ---
                 let mat = cv.imread(roiCanvas);
+                cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 1. 高解像度スケーリング (高さ500px)
+                // 1. 自動傾き補正 (Deskew)
+                let deskewMat = new cv.Mat();
+                cv.adaptiveThreshold(mat, deskewMat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 2);
+                let contoursOrig = new cv.MatVector();
+                let hierarchyOrig = new cv.Mat();
+                cv.findContours(deskewMat, contoursOrig, hierarchyOrig, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+                if (contoursOrig.size() > 0) {
+                    let allPoints = [];
+                    for (let i = 0; i < contoursOrig.size(); i++) {
+                        let cnt = contoursOrig.get(i);
+                        let area = cv.contourArea(cnt);
+                        if (area > 100) {
+                            for (let j = 0; j < cnt.data32S.length; j += 2) {
+                                allPoints.push({ x: cnt.data32S[j], y: cnt.data32S[j + 1] });
+                            }
+                        }
+                    }
+                    if (allPoints.length > 0) {
+                        let ptsMat = cv.matFromArray(allPoints.length, 1, cv.CV_32SC2, allPoints.flatMap(p => [p.x, p.y]));
+                        let rotatedRect = cv.minAreaRect(ptsMat);
+                        let angle = rotatedRect.angle;
+                        if (angle < -45) angle = angle + 90;
+                        if (Math.abs(angle) > 0.5 && Math.abs(angle) < 20) {
+                            let center = new cv.Point(mat.cols / 2, mat.rows / 2);
+                            let M = cv.getRotationMatrix2D(center, angle, 1);
+                            cv.warpAffine(mat, mat, M, mat.size(), cv.INTER_CUBIC, cv.BORDER_REPLICATE, new cv.Scalar());
+                            M.delete();
+                        }
+                        ptsMat.delete();
+                    }
+                }
+                deskewMat.delete(); contoursOrig.delete(); hierarchyOrig.delete();
+
+                // 2. 高解像度スケーリング (高さ500px)
                 let scale = 500 / mat.rows;
                 let dsize = new cv.Size(Math.round(mat.cols * scale), 500);
                 cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
-                cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 2. アンシャープマスキング (エッジの極限強調)
+                // 3. アンシャープマスキング
                 let blurred = new cv.Mat();
                 cv.GaussianBlur(mat, blurred, new cv.Size(0, 0), 3);
                 cv.addWeighted(mat, 1.5, blurred, -0.5, 0, mat);
                 blurred.delete();
 
-                // 3. バイラテラルフィルタ (背景の清浄化)
-                let filtered = new cv.Mat();
-                cv.bilateralFilter(mat, filtered, 9, 75, 75, cv.BORDER_DEFAULT);
-                mat.delete(); mat = filtered;
-
                 // 4. 二値化 (THRESH_BINARY_INV)
                 cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 31, 2);
 
-                // 5. 領域抽出（高度な処理：存在する場合のみ実行）
+                // 5. 領域抽出（クロップ）
                 let finalMat = new cv.Mat();
-                let tableFound = false;
-
+                let foundRegion = false;
                 try {
-                    // findNonZeroがなくても、findContoursがあれば領域特定が可能
-                    if (typeof cv.findContours === 'function' && typeof cv.MatVector === 'function') {
-                        let contours = new cv.MatVector();
-                        let hierarchy = new cv.Mat();
-                        cv.findContours(mat, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-                        if (contours.size() > 0) {
-                            // 全ての輪郭を囲む外接矩形を計算
-                            let minX = mat.cols, minY = mat.rows, maxX = 0, maxY = 0;
-                            for (let i = 0; i < contours.size(); ++i) {
-                                let rect = cv.boundingRect(contours.get(i));
-                                minX = Math.min(minX, rect.x);
-                                minY = Math.min(minY, rect.y);
-                                maxX = Math.max(maxX, rect.x + rect.width);
-                                maxY = Math.max(maxY, rect.y + rect.height);
-                            }
-
-                            // 有効な範囲があればクロップ
-                            if (maxX > minX && maxY > minY) {
-                                let tightRect = new cv.Rect(minX, minY, maxX - minX, maxY - minY);
-                                let cropped = mat.roi(tightRect);
-                                cropped.copyTo(finalMat);
-                                cropped.delete();
-                                tableFound = true;
+                    let contours = new cv.MatVector();
+                    let hierarchy = new cv.Mat();
+                    cv.findContours(mat, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+                    if (contours.size() > 0) {
+                        let x1 = mat.cols, y1 = mat.rows, x2 = 0, y2 = 0;
+                        for (let i = 0; i < contours.size(); ++i) {
+                            let rect = cv.boundingRect(contours.get(i));
+                            if (rect.width > 3 && rect.height > 3) {
+                                x1 = Math.min(x1, rect.x); y1 = Math.min(y1, rect.y);
+                                x2 = Math.max(x2, rect.x + rect.width); y2 = Math.max(y2, rect.y + rect.height);
                             }
                         }
-                        contours.delete();
-                        hierarchy.delete();
+                        if (x2 > x1 && y2 > y1) {
+                            let roiRect = new cv.Rect(x1, y1, x2 - x1, y2 - y1);
+                            let cropped = mat.roi(roiRect);
+                            cropped.copyTo(finalMat);
+                            cropped.delete();
+                            foundRegion = true;
+                        }
                     }
-                } catch (e) {
-                    console.warn("Advanced region extraction failed, falling back.", e);
-                }
+                    contours.delete(); hierarchy.delete();
+                } catch (e) { console.warn(e); }
 
-                if (!tableFound) {
-                    mat.copyTo(finalMat);
-                }
+                if (!foundRegion) mat.copyTo(finalMat);
 
-                // 6. 最終調整（Tesseract用マージン追加）
+                // 6. 白マージン付与と反転
                 cv.copyMakeBorder(finalMat, finalMat, 40, 40, 40, 40, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
-
-                // 7. 反転：白背景に黒文字
                 cv.bitwise_not(finalMat, finalMat);
 
-                // 8. デバッグ表示とOCR
+                // 7. 表示とOCR
                 cv.imshow('canvas-debug', finalMat);
                 const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
 
                 mat.delete();
                 finalMat.delete();
 
-                // 結果のクリーンアップ
-                const cleanText = text.replace(/\s+/g, ' ').trim();
-                ocrResult.innerText = cleanText || "再試行してください（枠内に文字を収める）";
+                ocrResult.innerText = text.replace(/\s+/g, ' ').trim() || "文字が検出できませんでした";
 
             } catch (err) {
                 console.error(err);
