@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>REPAIR OCR v5.4</title>
+    <title>REPAIR OCR v5.6 (Illumination Leveling)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script async src="opencv_v1.js" onload="onOpenCvReady();"></script>
@@ -19,7 +19,7 @@
                 LOADING...</span>
             <span id="ocr-status" class="text-slate-500 text-[8px]">OCR: INITIALIZING...</span>
         </div>
-        <span class="text-orange-500 font-black italic tracking-widest">REPAIR MODE v5.0</span>
+        <span class="text-orange-500 font-black italic tracking-widest">REPAIR MODE v5.6</span>
     </div>
 
     <main class="max-w-md mx-auto pt-14 p-4 h-screen flex flex-col">
@@ -61,7 +61,7 @@
             <div class="bg-slate-900 p-4 rounded-2xl border border-slate-800 flex-grow overflow-y-auto relative">
                 <label
                     class="absolute -top-2 left-4 px-2 bg-slate-950 text-orange-400 text-[8px] font-bold uppercase">OCR
-                    Result (Hybrid JPN/ENG)</label>
+                    Result (Leveling Hybrid)</label>
                 <div id="ocr-result" class="text-xs leading-relaxed break-all whitespace-pre-wrap pt-2 text-slate-100">
                     ガイド枠に「かすれ」がある文字を収めてください。自動で線を補修して読み取ります。
                 </div>
@@ -102,7 +102,7 @@
                 tessjs_create_tsv: '0',
             });
 
-            ocrStatus.innerText = "OCR: HYBRID READY";
+            ocrStatus.innerText = "OCR: LEVELING READY";
             ocrStatus.className = "text-green-500 text-[8px]";
             checkEngines();
         }
@@ -160,24 +160,41 @@
                 let dsize = new cv.Size(scaleSize, Math.round(mat.rows * scale));
                 cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
 
-                // 2. コントラスト補正 (Normalize + CLAHE)
+                // 2. コントラスト補正
                 cv.normalize(mat, mat, 0, 255, cv.NORM_MINMAX);
                 let clahe = new cv.CLAHE(3.5, new cv.Size(8, 8));
                 clahe.apply(mat, mat);
                 clahe.delete();
 
-                // 3. 鮮鋭化 (アンシャープマスク)
-                let tempBlurred = new cv.Mat();
-                cv.GaussianBlur(mat, tempBlurred, new cv.Size(9, 9), 2);
-                cv.addWeighted(mat, 2.0, tempBlurred, -1.0, 0, mat);
-                tempBlurred.delete();
+                // 3. 【新実装】背景の推定と照明の完全均一化 (Illumination Leveling)
+                // 巨大なガウシアンフィルタで「文字が消えた背景だけの画像（グラデーション）」を作る
+                let bgMat = new cv.Mat();
+                cv.GaussianBlur(mat, bgMat, new cv.Size(111, 111), 0);
 
-                // --- 4. 安定化された角度判定 (Text-Line Deskew) ---
+                // 元画像を Float32 に変換して、背景で割り算する (img / bg)
+                let matF = new cv.Mat();
+                mat.convertTo(matF, cv.CV_32F);
+                let bgF = new cv.Mat();
+                bgMat.convertTo(bgF, cv.CV_32F);
+
+                let divided = new cv.Mat();
+                cv.divide(matF, bgF, divided, 255.0); // (mat / bg) * 255
+
+                // 8bitに戻す
+                divided.convertTo(mat, cv.CV_8U);
+
+                bgMat.delete();
+                matF.delete();
+                bgF.delete();
+                divided.delete();
+
+                // これで、斜めからの撮影でも「画像全体が完全に同じ明るさの白い紙」になりました。
+
+                // --- 4. 安定化された角度判定 (Deskew) ---
                 let angle = 0;
                 let binaryForAngle = new cv.Mat();
                 cv.threshold(mat, binaryForAngle, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
 
-                // 文字を横方向に強く結合させ、「行」のブロックを作る（日本語特有の隙間を消す）
                 let M_line = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(25, 3));
                 let dilatedLines = new cv.Mat();
                 cv.morphologyEx(binaryForAngle, dilatedLines, cv.MORPH_DILATE, M_line);
@@ -186,7 +203,6 @@
                 try {
                     let contours = new cv.MatVector();
                     let hierarchy = new cv.Mat();
-                    // 結合された「行」の輪郭を取得
                     cv.findContours(dilatedLines, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
                     let angles = [];
@@ -194,40 +210,23 @@
                         let cnt = contours.get(i);
                         let rect = cv.minAreaRect(cnt);
 
-                        // 明らかなノイズを除外（極端に小さいものや、正方形に近い箱を除外）
-                        // 横長、または縦長（縦書き）の「行」らしいものだけをサンプルにする
                         if (rect.size.width > 30 && rect.size.height > 10) {
                             let aspectRatio = Math.max(rect.size.width / rect.size.height, rect.size.height / rect.size.width);
-                            if (aspectRatio > 1.5) { // 行とみなせる細長さがあるか
+                            if (aspectRatio > 1.5) {
                                 let a = rect.angle;
-                                // OpenCVの仕様: 角度は水平線と最初の辺のなす角。
-                                // 長辺が水平になるように正規化する
-                                if (rect.size.width < rect.size.height) {
-                                    a = a + 90;
-                                }
-                                // -45度〜+45度に収める
+                                if (rect.size.width < rect.size.height) a = a + 90;
                                 if (a > 45) a -= 90;
                                 if (a < -45) a += 90;
-
                                 angles.push(a);
                             }
                         }
                     }
 
-                    // 有効な行が複数見つかった場合のみ、中央値を採用
                     if (angles.length > 0) {
                         angles.sort((a, b) => a - b);
                         angle = angles[Math.floor(angles.length / 2)];
-
-                        // 【不感帯（デッドゾーン）】
-                        // +/- 3.0度以内の揺れは真正面と判断し、回転させない
-                        if (Math.abs(angle) < 3.0) {
-                            angle = 0;
-                        }
-                        // 異常な角度（15度以上など）の回転は防ぐ（誤判定時のお辞儀対策）
-                        if (Math.abs(angle) > 15.0) {
-                            angle = 0;
-                        }
+                        if (Math.abs(angle) < 3.0) angle = 0;
+                        if (Math.abs(angle) > 15.0) angle = 0;
                     }
 
                     contours.delete();
@@ -242,11 +241,21 @@
                 if (Math.abs(angle) > 0) {
                     let center = new cv.Point(mat.cols / 2, mat.rows / 2);
                     let M_rot = cv.getRotationMatrix2D(center, angle, 1.0);
-                    cv.warpAffine(mat, mat, M_rot, new cv.Size(mat.cols, mat.rows), cv.INTER_CUBIC, cv.BORDER_REPLICATE);
+                    // 背景に合わせて余白を255(白)で埋める
+                    cv.warpAffine(mat, mat, M_rot, new cv.Size(mat.cols, mat.rows), cv.INTER_CUBIC, cv.BORDER_CONSTANT, new cv.Scalar(255, 255, 255, 255));
                     M_rot.delete();
                 }
 
-                // 5. 二値化 (Hybrid Adaptive + Otsu)
+                // 5. 【順序変更】回転による滲みを補正する「鮮鋭化 (アンシャープマスク)」
+                // これにより、アフィン変換後でも文字の輪郭がカリカリになります。
+                let tempBlurred = new cv.Mat();
+                cv.GaussianBlur(mat, tempBlurred, new cv.Size(9, 9), 2);
+                cv.addWeighted(mat, 2.0, tempBlurred, -1.0, 0, mat);
+                tempBlurred.delete();
+
+                // 6. 復活した「最強のハイブリッド二値化」
+                // 背景が完全な「白」になったため、大津(Otsu)がノイズを完璧に弾き飛ばします。
+                // 同時に、適応的二値化(Adaptive)がかすれた文字を拾います。
                 let matA = new cv.Mat();
                 let matO = new cv.Mat();
                 cv.adaptiveThreshold(mat, matA, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 51, 15);
@@ -255,12 +264,12 @@
                 matA.delete();
                 matO.delete();
 
-                // 6. 形態学処理 (クロージング)
+                // 7. 形態学処理 (クロージング)
                 let M_close = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
                 cv.morphologyEx(mat, mat, cv.MORPH_CLOSE, M_close);
                 M_close.delete();
 
-                // 7. クロップ (文字領域にフィットさせる)
+                // 8. クロップ (文字領域にフィットさせる)
                 let finalMat = new cv.Mat();
                 let tableFound = false;
                 try {
@@ -297,9 +306,9 @@
 
                 if (!tableFound) mat.copyTo(finalMat);
 
-                // 余白追加と反転 (白背景黒文字)
+                // 9. 最終仕上げ：黒背景白文字に反転し、余白を追加
                 cv.copyMakeBorder(finalMat, finalMat, 50, 50, 50, 50, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
-                cv.bitwise_not(finalMat, finalMat);
+                // cv.bitwise_notはハイブリッド二値化の時点で既にINV(反転)させているため不要
 
                 cv.imshow('canvas-debug', finalMat);
                 const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
