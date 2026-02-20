@@ -169,26 +169,36 @@
 
                 // 5. 傾き補正 (Deskew)
                 let nonZero = new cv.Mat();
-                cv.findNonZero(mat, nonZero);
-                let rect = cv.minAreaRect(nonZero);
-                let angle = rect.angle;
-                if (angle < -45) angle = angle + 90;
-
-                if (Math.abs(angle) > 0.5) {
-                    let center = new cv.Point(mat.cols / 2, mat.rows / 2);
-                    let M = cv.getRotationMatrix2D(center, angle, 1);
-                    cv.warpAffine(mat, mat, M, new cv.Size(mat.cols, mat.rows), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 255));
-                    M.delete();
+                if (typeof cv.findNonZero === 'function') {
+                    cv.findNonZero(mat, nonZero);
+                    if (nonZero.rows > 0) {
+                        let rect = cv.minAreaRect(nonZero);
+                        let angle = rect.angle;
+                        if (angle < -45) angle = angle + 90;
+                        if (Math.abs(angle) > 0.5) {
+                            let center = new cv.Point(mat.cols / 2, mat.rows / 2);
+                            let M = cv.getRotationMatrix2D(center, angle, 1);
+                            cv.warpAffine(mat, mat, M, new cv.Size(mat.cols, mat.rows), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 255));
+                            M.delete();
+                        }
+                    }
                 }
 
                 // 6. 文字領域へのタイトなクロップ (不要な余白の排除)
-                // 補正後のnonZeroを再計算
-                cv.findNonZero(mat, nonZero);
-                let tightRect = cv.boundingRect(nonZero);
-                let cropped = mat.roi(tightRect);
                 let finalMat = new cv.Mat();
-                cropped.copyTo(finalMat);
-                cropped.delete();
+                if (typeof cv.findNonZero === 'function') {
+                    cv.findNonZero(mat, nonZero);
+                    if (nonZero.rows > 0) {
+                        let tightRect = cv.boundingRect(nonZero);
+                        let cropped = mat.roi(tightRect);
+                        cropped.copyTo(finalMat);
+                        cropped.delete();
+                    } else {
+                        mat.copyTo(finalMat);
+                    }
+                } else {
+                    mat.copyTo(finalMat);
+                }
                 nonZero.delete();
 
                 // 7. 最終マージン追加 (Tesseract用 40px)
