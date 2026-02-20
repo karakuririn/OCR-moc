@@ -19,7 +19,7 @@
                 LOADING...</span>
             <span id="ocr-status" class="text-slate-500 text-[8px]">OCR: INITIALIZING...</span>
         </div>
-        <span class="text-orange-500 font-black italic tracking-widest">REPAIR MODE v5.1</span>
+        <span class="text-orange-500 font-black italic tracking-widest">REPAIR MODE v5.0</span>
     </div>
 
     <main class="max-w-md mx-auto pt-14 p-4 h-screen flex flex-col">
@@ -144,40 +144,37 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR最適化版 最終形態) ---
+                // --- OpenCV 文字補修プロセス (Otsu 二値化・最終突破版) ---
                 let mat = cv.imread(roiCanvas);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 1. スケーリング (適度な高解像度化, 幅800px固定でアスペクト比を維持)
-                let scale = 800 / mat.cols;
-                let dsize = new cv.Size(800, Math.round(mat.rows * scale));
+                // 1. スケーリング (適度な高解像度化, 幅1000px固定でより精細に)
+                let scale = 1000 / mat.cols;
+                let dsize = new cv.Size(1000, Math.round(mat.rows * scale));
                 cv.resize(mat, mat, dsize, 0, 0, cv.INTER_CUBIC);
 
                 // 2. 照明ムラ補正 (CLAHE: コントラスト制限適応ヒストグラム平滑化)
-                // スマホの影や紙の黄ばみを均等にし、二値化の精度を飛躍的に向上させる
+                // スマホの影や紙の黄ばみを均等にし、Otsu二値化の精度を飛躍的に向上させる
                 let clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
                 clahe.apply(mat, mat);
                 clahe.delete();
 
-                // 3. ノイズ除去 (メディアンフィルタによるゴマ塩ノイズの除去)
-                // ガウシアンよりも文字のエッジ（輪郭）を保持しやすい
-                cv.medianBlur(mat, mat, 3);
+                // 3. 強力な平滑化 (バイラテラルフィルタ)
+                // 文字の境界線（エッジ）をクッキリ残したまま、背景の不要なノイズを平滑化する
+                let filtered = new cv.Mat();
+                cv.bilateralFilter(mat, filtered, 9, 75, 75, cv.BORDER_DEFAULT);
+                mat.delete(); mat = filtered;
 
-                // 4. 適応的二値化 (白文字・黒背景として抽出)
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 25, 12);
+                // 4. 大津の二値化 (Otsu's Thresholding)
+                // 適応的二値化(Adaptive)の弱点である「何もない背景部分までノイズとして拾ってしまう」現象を防ぐ
+                cv.threshold(mat, mat, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
 
                 // 5. かすれ修復 (モルフォロジー変換：クロージング処理)
-                // 膨張→収縮を一度に行うことで、漢字の隙間を潰さずに途切れた線を繋ぐ
-                let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+                let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(4, 4));
                 cv.morphologyEx(mat, mat, cv.MORPH_CLOSE, M);
                 M.delete();
 
-                // より強固なかすれ補強のための軽いストローク強調 (膨張処理)
-                let M2 = cv.Mat.ones(2, 2, cv.CV_8U);
-                cv.dilate(mat, mat, M2, new cv.Point(-1, -1), 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
-                M2.delete();
-
-                // 5. 領域抽出（文字がある部分だけを正確にクロップ）
+                // 6. 領域抽出（文字がある部分だけを正確にクロップ）
                 let finalMat = new cv.Mat();
                 let tableFound = false;
 
