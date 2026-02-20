@@ -144,103 +144,66 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR最適化版 v11：Stable Clarity) ---
+                // --- OpenCV 文字補修プロセス (OCR 正常化版 v12：Stable Vision) ---
                 let mat = cv.imread(roiCanvas);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 1. 強力なコントラスト改善 (正規化 + CLAHE)
-                cv.normalize(mat, mat, 0, 255, cv.NORM_MINMAX, cv.CV_8U);
-                let clahe = new cv.CLAHE(3.0, new cv.Size(8, 8));
-                clahe.apply(mat, mat);
-                clahe.delete();
-
-                // 2. バイラテラルフィルタ (エッジを保護して背景ノイズを消す)
+                // 1. ノイズ除去 (バイラテラル：輪郭を壊さずザラつきを消す)
                 let filtered = new cv.Mat();
                 cv.bilateralFilter(mat, filtered, 9, 75, 75, cv.BORDER_DEFAULT);
                 mat.delete(); mat = filtered;
 
-                // 3. 予備解析：文字サイズの検知
-                let tmp = new cv.Mat();
-                cv.adaptiveThreshold(mat, tmp, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 2);
-                let cnts = new cv.MatVector();
-                let hier = new cv.Mat();
-                cv.findContours(tmp, cnts, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-                let sumH = 0, countH = 0;
-                for (let i = 0; i < cnts.size(); ++i) {
-                    let r = cv.boundingRect(cnts.get(i));
-                    if (r.height > 8 && r.height < mat.rows * 0.8) {
-                        sumH += r.height;
-                        countH++;
-                    }
-                }
-                let avgH = countH > 0 ? sumH / countH : 20;
-                cnts.delete(); hier.delete(); tmp.delete();
+                // 2. コントラスト正規化 (明暗を整える)
+                cv.normalize(mat, mat, 0, 255, cv.NORM_MINMAX, cv.CV_8U);
 
-                // 4. 適応的スケーリング (ターゲット文字高さ 42px)
-                let scale = 42 / avgH;
-                let targetH = Math.min(Math.max(mat.rows * scale, 400), 900);
-                let dsize = new cv.Size(Math.round(mat.cols * (targetH / mat.rows)), targetH);
+                // 3. 適応的なスケーリング (読みやすいサイズへの固定)
+                let scale = 400 / mat.rows; // 高さを400px前後に固定して安定させる
+                let dsize = new cv.Size(Math.round(mat.cols * scale), 400);
                 cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
 
-                // 5. 仕上げの鮮鋭化 (控えめ)
-                let blurred = new cv.Mat();
-                cv.GaussianBlur(mat, blurred, new cv.Size(0, 0), 1.5);
-                cv.addWeighted(mat, 1.4, blurred, -0.4, 0, mat);
-                blurred.delete();
+                // 4. 二値化 (ブロックサイズを大きくして「文字の中抜け」を防ぐ)
+                // ブロックサイズを大きめの 51 に設定
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 51, 10);
 
-                // 6. 二値化 (ブロックサイズを21に絞って癒着を防ぐ)
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 4);
-
-                // 7. 領域抽出とクリーンアップ
+                // 5. 領域抽出とクリーンアップ
                 let finalMat = new cv.Mat();
                 let found = false;
                 try {
-                    let c = new cv.MatVector();
-                    let h = new cv.Mat();
-                    cv.findContours(mat, c, h, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-                    if (c.size() > 0) {
+                    let contours = new cv.MatVector();
+                    let hierarchy = new cv.Mat();
+                    cv.findContours(mat, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+                    if (contours.size() > 0) {
                         let x1 = mat.cols, y1 = mat.rows, x2 = 0, y2 = 0;
-                        for (let i = 0; i < c.size(); ++i) {
-                            let r = cv.boundingRect(c.get(i));
-                            if (r.width > 3 && r.height > 3) {
-                                x1 = Math.min(x1, r.x); y1 = Math.min(y1, r.y);
-                                x2 = Math.max(x2, r.x + r.width); y2 = Math.max(y2, r.y + r.height);
+                        for (let i = 0; i < contours.size(); ++i) {
+                            let rect = cv.boundingRect(contours.get(i));
+                            if (rect.width > 2 && rect.height > 2) {
+                                x1 = Math.min(x1, rect.x); y1 = Math.min(y1, rect.y);
+                                x2 = Math.max(x2, rect.x + rect.width); y2 = Math.max(y2, rect.y + rect.height);
                             }
                         }
                         if (x2 > x1 && y2 > y1) {
-                            let rect = new cv.Rect(x1, y1, x2 - x1, y2 - y1);
-                            let cropped = mat.roi(rect);
+                            let roi = new cv.Rect(x1, y1, x2 - x1, y2 - y1);
+                            let cropped = mat.roi(roi);
                             cropped.copyTo(finalMat);
                             cropped.delete();
                             found = true;
                         }
                     }
-                    c.delete(); h.delete();
-                } catch (e) { console.warn(e); }
+                    contours.delete(); hierarchy.delete();
+                } catch (e) { console.warn("ROI extraction fallback", e); }
 
                 if (!found) mat.copyTo(finalMat);
 
-                cv.copyMakeBorder(finalMat, finalMat, 50, 50, 50, 50, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
+                // 6. Tesseract用の白マージン追加と反転 (白背景に黒文字)
+                cv.copyMakeBorder(finalMat, finalMat, 40, 40, 40, 40, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
                 cv.bitwise_not(finalMat, finalMat);
 
-                // 8. OCR実行 + AI後補正
+                // 7. 表示と認識
                 cv.imshow('canvas-debug', finalMat);
                 const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
 
-                let resultText = text.replace(/\s+/g, ' ').trim();
-
-                // ブラウザ内蔵 AI 補正 (オプション)
-                if (window.ai && window.ai.languageModel) {
-                    try {
-                        const session = await window.ai.languageModel.create();
-                        const prompt = `OCR結果を正しい日本語に修正してください。1行のみ出力：${resultText}`;
-                        const aiFixed = await session.prompt(prompt);
-                        if (aiFixed) resultText = aiFixed.trim();
-                        session.destroy();
-                    } catch (e) { }
-                }
-
-                ocrResult.innerText = resultText || "スキャンを再試行してください";
+                // 結果の反映
+                ocrResult.innerText = text.replace(/\s+/g, ' ').trim() || "文字が検出できませんでした";
 
                 mat.delete();
                 finalMat.delete();
