@@ -19,7 +19,7 @@
                 LOADING...</span>
             <span id="ocr-status" class="text-slate-500 text-[8px]">OCR: INITIALIZING...</span>
         </div>
-        <span class="text-orange-500 font-black italic tracking-widest">REPAIR MODE v5.0</span>
+        <span class="text-orange-500 font-black italic tracking-widest">REPAIR MODE v7.0</span>
     </div>
 
     <main class="max-w-md mx-auto pt-14 p-4 h-screen flex flex-col">
@@ -98,6 +98,8 @@
             // 【重要】単一の均一なテキストブロックとして認識 (PSM 6)
             await worker.setParameters({
                 tessedit_pageseg_mode: '6',
+                tessjs_create_hocr: '0',
+                tessjs_create_tsv: '0',
             });
 
             ocrStatus.innerText = "OCR: HYBRID READY";
@@ -127,7 +129,7 @@
         scanBtn.onclick = async () => {
             if (!cvReady || !worker) return;
             loader.classList.remove('hidden');
-            ocrResult.innerText = "傾き補正・解析中...";
+            ocrResult.innerText = "解析中...";
 
             try {
                 const canvas = document.getElementById('canvas-proc');
@@ -136,9 +138,9 @@
                 canvas.height = video.videoHeight;
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                // ROI切り出し
+                // ROI切り出し (中央30%)
                 const roiW = canvas.width * 0.90;
-                const roiH = canvas.height * 0.30; // 少し広めに変更（傾き対応）
+                const roiH = canvas.height * 0.30;
                 const roiX = (canvas.width - roiW) / 2;
                 const roiY = (canvas.height - roiH) / 2;
 
@@ -148,91 +150,101 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修・デスクー（傾き補正）プロセス ---
+                // --- OpenCV パイプライン ---
                 let mat = cv.imread(roiCanvas);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 1. 高解像度スケーリング
-                let scale = 1500 / mat.cols;
-                let dsize = new cv.Size(1500, Math.round(mat.rows * scale));
+                // 1. スケーリング (1500px)
+                let scaleSize = 1500;
+                let scale = scaleSize / mat.cols;
+                let dsize = new cv.Size(scaleSize, Math.round(mat.rows * scale));
                 cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
 
-                // 2. 正規化 & CLAHE
+                // 2. コントラスト補正 (Normalize + CLAHE)
                 cv.normalize(mat, mat, 0, 255, cv.NORM_MINMAX);
                 let clahe = new cv.CLAHE(3.5, new cv.Size(8, 8));
                 clahe.apply(mat, mat);
                 clahe.delete();
 
-                // 3. アンシャープマスク
-                let blurred = new cv.Mat();
-                cv.GaussianBlur(mat, blurred, new cv.Size(9, 9), 2);
-                cv.addWeighted(mat, 2.0, blurred, -1.0, 0, mat);
-                blurred.delete();
+                // 3. 鮮鋭化 (アンシャープマスク)
+                let tempBlurred = new cv.Mat();
+                cv.GaussianBlur(mat, tempBlurred, new cv.Size(9, 9), 2);
+                cv.addWeighted(mat, 2.0, tempBlurred, -1.0, 0, mat);
+                tempBlurred.delete();
 
-                // 4. 二値化 (一時的な二値化で角度を判定)
-                let tempMat = new cv.Mat();
-                cv.threshold(mat, tempMat, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
-
-                // --- 自動傾き補正 (Deskew) ---
+                // --- 4. 安定化された角度判定 (Median-Angle Deskew) ---
                 let angle = 0;
+                let binaryForAngle = new cv.Mat();
+                cv.threshold(mat, binaryForAngle, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
+
                 try {
-                    let points = new cv.MatVector();
+                    let contours = new cv.MatVector();
                     let hierarchy = new cv.Mat();
-                    cv.findContours(tempMat, points, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+                    cv.findContours(binaryForAngle, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-                    if (points.size() > 0) {
-                        // すべての輪郭をまとめた大きな輪郭を擬似的に作成
-                        let allPoints = [];
-                        for (let i = 0; i < points.size(); ++i) {
-                            let cnt = points.get(i);
-                            let rect = cv.boundingRect(cnt);
-                            if (rect.width > 20 && rect.height > 20) {
-                                // 代表的な点だけを抽出（性能のため）
-                                allPoints.push(new cv.Point(rect.x, rect.y));
-                                allPoints.push(new cv.Point(rect.x + rect.width, rect.y + rect.height));
+                    let angles = [];
+                    for (let i = 0; i < contours.size(); ++i) {
+                        let cnt = contours.get(i);
+                        let area = cv.contourArea(cnt);
+                        // 小さすぎるノイズを除去して統計精度を向上
+                        if (area > 50 && area < (mat.cols * mat.rows * 0.1)) {
+                            let rect = cv.minAreaRect(cnt);
+                            let a = rect.angle;
+                            // OpenCVの返り値の仕様を正規化
+                            if (rect.size.width < rect.size.height) {
+                                a = a + 90;
                             }
-                        }
-
-                        if (allPoints.length > 0) {
-                            let matPoints = cv.matFromArray(allPoints.length, 1, cv.CV_32SC2, allPoints.flatMap(p => [p.x, p.y]));
-                            let rotatedRect = cv.minAreaRect(matPoints);
-                            angle = rotatedRect.angle;
-                            if (angle < -45) angle += 90;
-                            // 傾きが強すぎる場合は無視（誤判定防止）
-                            if (Math.abs(angle) > 30) angle = 0;
-                            matPoints.delete();
+                            // 角度を-45〜45に補正
+                            if (a > 45) a -= 90;
+                            if (a < -45) a += 90;
+                            angles.push(a);
                         }
                     }
-                    points.delete();
+
+                    if (angles.length > 5) {
+                        // 中央値(Median)の計算
+                        angles.sort((a, b) => a - b);
+                        angle = angles[Math.floor(angles.length / 2)];
+
+                        // 【不感帯（デッドゾーン）の設定】
+                        // +/- 2.5度以内の揺れは真正面と判断し、回転させない
+                        if (Math.abs(angle) < 2.5) {
+                            angle = 0;
+                        }
+                        // 回転の最大値を制限 (お辞儀しすぎ対策)
+                        if (Math.abs(angle) > 20) angle = 0;
+                    }
+
+                    contours.delete();
                     hierarchy.delete();
                 } catch (e) {
-                    console.warn("Deskew analysis failed", e);
+                    console.warn("Deskew stabilization failed", e);
                 }
-                tempMat.delete();
+                binaryForAngle.delete();
 
-                // 角度があれば補正（回転）
-                if (Math.abs(angle) > 0.5) {
+                // 角度があれば画像を回転
+                if (Math.abs(angle) > 0) {
                     let center = new cv.Point(mat.cols / 2, mat.rows / 2);
-                    let M_rot = cv.getRotationMatrix2D(center, angle, 1);
+                    let M_rot = cv.getRotationMatrix2D(center, angle, 1.0);
                     cv.warpAffine(mat, mat, M_rot, new cv.Size(mat.cols, mat.rows), cv.INTER_CUBIC, cv.BORDER_REPLICATE);
                     M_rot.delete();
                 }
 
-                // 5. 本番の二値化 (Hybrid)
-                let adaptiveMat = new cv.Mat();
-                let otsuMat = new cv.Mat();
-                cv.adaptiveThreshold(mat, adaptiveMat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 51, 15);
-                cv.threshold(mat, otsuMat, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
-                cv.bitwise_and(adaptiveMat, otsuMat, mat);
-                adaptiveMat.delete();
-                otsuMat.delete();
+                // 5. 二値化 (Hybrid Adaptive + Otsu)
+                let matA = new cv.Mat();
+                let matO = new cv.Mat();
+                cv.adaptiveThreshold(mat, matA, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 51, 15);
+                cv.threshold(mat, matO, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
+                cv.bitwise_and(matA, matO, mat);
+                matA.delete();
+                matO.delete();
 
-                // 6. モルフォロジー (クロージング)
+                // 6. 形態学処理 (クロージング)
                 let M_close = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
                 cv.morphologyEx(mat, mat, cv.MORPH_CLOSE, M_close);
                 M_close.delete();
 
-                // 7. 最終クロップ
+                // 7. クロップ (文字領域にフィットさせる)
                 let finalMat = new cv.Mat();
                 let tableFound = false;
                 try {
@@ -256,8 +268,8 @@
                             minY = Math.max(0, minY - pad);
                             maxX = Math.min(mat.cols, maxX + pad);
                             maxY = Math.min(mat.rows, maxY + pad);
-                            let tightRect = new cv.Rect(minX, minY, maxX - minX, maxY - minY);
-                            let cropped = mat.roi(tightRect);
+                            let r = new cv.Rect(minX, minY, maxX - minX, maxY - minY);
+                            let cropped = mat.roi(r);
                             cropped.copyTo(finalMat);
                             cropped.delete();
                             tableFound = true;
@@ -265,12 +277,11 @@
                     }
                     contours.delete();
                     hierarchy.delete();
-                } catch (e) {
-                    console.warn("Final crop failed", e);
-                }
+                } catch (e) { }
 
                 if (!tableFound) mat.copyTo(finalMat);
 
+                // 余白追加と反転 (白背景黒文字)
                 cv.copyMakeBorder(finalMat, finalMat, 50, 50, 50, 50, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
                 cv.bitwise_not(finalMat, finalMat);
 
@@ -281,7 +292,7 @@
                 finalMat.delete();
 
                 const cleanText = text.replace(/\s+/g, ' ').trim();
-                ocrResult.innerText = cleanText || "再試行してください（枠内に収める・水平に撮る）";
+                ocrResult.innerText = cleanText || "再試行（枠の中央に水平に収める）";
 
             } catch (err) {
                 console.error(err);
