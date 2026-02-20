@@ -167,47 +167,55 @@
                 // 4. 二値化 (THRESH_BINARY_INV)
                 cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 31, 2);
 
-                // 5. 傾き補正 (Deskew)
-                let nonZero = new cv.Mat();
-                if (typeof cv.findNonZero === 'function') {
-                    cv.findNonZero(mat, nonZero);
-                    if (nonZero.rows > 0) {
-                        let rect = cv.minAreaRect(nonZero);
-                        let angle = rect.angle;
-                        if (angle < -45) angle = angle + 90;
-                        if (Math.abs(angle) > 0.5) {
-                            let center = new cv.Point(mat.cols / 2, mat.rows / 2);
-                            let M = cv.getRotationMatrix2D(center, angle, 1);
-                            cv.warpAffine(mat, mat, M, new cv.Size(mat.cols, mat.rows), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 255));
-                            M.delete();
+                // 5. 領域抽出（高度な処理：存在する場合のみ実行）
+                let finalMat = new cv.Mat();
+                let tableFound = false;
+
+                try {
+                    // findNonZeroがなくても、findContoursがあれば領域特定が可能
+                    if (typeof cv.findContours === 'function' && typeof cv.MatVector === 'function') {
+                        let contours = new cv.MatVector();
+                        let hierarchy = new cv.Mat();
+                        cv.findContours(mat, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+                        if (contours.size() > 0) {
+                            // 全ての輪郭を囲む外接矩形を計算
+                            let minX = mat.cols, minY = mat.rows, maxX = 0, maxY = 0;
+                            for (let i = 0; i < contours.size(); ++i) {
+                                let rect = cv.boundingRect(contours.get(i));
+                                minX = Math.min(minX, rect.x);
+                                minY = Math.min(minY, rect.y);
+                                maxX = Math.max(maxX, rect.x + rect.width);
+                                maxY = Math.max(maxY, rect.y + rect.height);
+                            }
+
+                            // 有効な範囲があればクロップ
+                            if (maxX > minX && maxY > minY) {
+                                let tightRect = new cv.Rect(minX, minY, maxX - minX, maxY - minY);
+                                let cropped = mat.roi(tightRect);
+                                cropped.copyTo(finalMat);
+                                cropped.delete();
+                                tableFound = true;
+                            }
                         }
+                        contours.delete();
+                        hierarchy.delete();
                     }
+                } catch (e) {
+                    console.warn("Advanced region extraction failed, falling back.", e);
                 }
 
-                // 6. 文字領域へのタイトなクロップ (不要な余白の排除)
-                let finalMat = new cv.Mat();
-                if (typeof cv.findNonZero === 'function') {
-                    cv.findNonZero(mat, nonZero);
-                    if (nonZero.rows > 0) {
-                        let tightRect = cv.boundingRect(nonZero);
-                        let cropped = mat.roi(tightRect);
-                        cropped.copyTo(finalMat);
-                        cropped.delete();
-                    } else {
-                        mat.copyTo(finalMat);
-                    }
-                } else {
+                if (!tableFound) {
                     mat.copyTo(finalMat);
                 }
-                nonZero.delete();
 
-                // 7. 最終マージン追加 (Tesseract用 40px)
+                // 6. 最終調整（Tesseract用マージン追加）
                 cv.copyMakeBorder(finalMat, finalMat, 40, 40, 40, 40, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
 
-                // 8. 反転：白背景に黒文字
+                // 7. 反転：白背景に黒文字
                 cv.bitwise_not(finalMat, finalMat);
 
-                // 9. デバッグ表示とOCR
+                // 8. デバッグ表示とOCR
                 cv.imshow('canvas-debug', finalMat);
                 const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
 
