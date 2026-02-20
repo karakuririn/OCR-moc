@@ -1,44 +1,41 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FINAL FIX OCR - Executive Strategic Partner</title>
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://docs.opencv.org; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://docs.opencv.org; img-src 'self' data: blob:; connect-src 'self' blob:;">
+    <title>RECOVERY OCR v3.2</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-    <script async src="https://cdn.jsdelivr.net/npm/@techstardude/opencv-js@4.5.4-release_1/opencv.js" 
-            id="opencv-js" 
-            onload="addLog('✅ OpenCV.js Loaded from Mirror'); onOpenCvReady();" 
-            onerror="trySecondaryOpenCV();"></script>
+    <script async src="https://docs.opencv.org/4.10.0/opencv.js"
+        onload="addLog('✅ OpenCV Engine Loaded.'); onOpenCvReady();"
+        onerror="addLog('❌ OpenCV CDN Load Failed. Check Console.'); onOpenCvFail();"></script>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen p-4 font-mono text-sm">
 
-    <header class="max-w-md mx-auto mb-4 border-b border-slate-800 pb-2">
-        <h1 class="text-xl font-black text-blue-500 italic">SYSTEM RECOVERY v2.4</h1>
-        <p id="setup-status" class="text-[9px] text-yellow-500 mt-1">INITIALIZING COMPONENTS...</p>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-4 font-mono text-[10px]">
+
+    <header class="max-w-md mx-auto mb-4 border-b border-slate-800 pb-2 flex justify-between">
+        <h1 class="font-black text-blue-500 italic">SYSTEM BYPASS v3.2</h1>
+        <div id="setup-status" class="text-red-500 font-bold tracking-widest">BOOTING...</div>
     </header>
 
-    <div class="max-w-md mx-auto bg-slate-900 rounded-2xl p-2 border border-slate-800">
-        <div class="relative rounded-xl overflow-hidden aspect-video bg-black">
-            <video id="video" autoplay playsinline class="w-full h-full object-cover"></video>
-            <div id="loader" class="absolute inset-0 bg-black/80 flex flex-col items-center justify-center hidden text-blue-400">
-                <div class="w-8 h-8 border-4 border-current border-t-transparent rounded-full animate-spin"></div>
-                <p class="mt-4 text-[10px] font-bold">AI ANALYZING...</p>
-            </div>
-        </div>
+    <div class="max-w-md mx-auto bg-slate-900 rounded-2xl p-2 border border-slate-800 shadow-2xl">
+        <video id="video" autoplay playsinline
+            class="w-full aspect-video rounded-xl bg-black object-cover shadow-inner"></video>
     </div>
 
-    <div class="max-w-md mx-auto mt-4 bg-black border border-slate-800 rounded p-2 h-32 overflow-y-auto text-[9px] text-slate-400 shadow-inner" id="log-console">
-    </div>
+    <div class="max-w-md mx-auto mt-4 bg-black border border-slate-800 rounded p-2 h-32 overflow-y-auto text-slate-500 shadow-inner"
+        id="log-console"></div>
 
     <div class="max-w-md mx-auto mt-4 space-y-4">
-        <button id="scan-btn" disabled class="w-full py-4 bg-slate-800 text-slate-500 rounded-xl font-black text-lg">
-            BOOTING AI...
+        <button id="scan-btn"
+            class="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-lg shadow-lg active:scale-95 transition-all">
+            スキャン実行
         </button>
-
-        <div class="bg-slate-900 p-3 rounded-lg border border-slate-800 min-h-[4rem]">
-            <label class="text-[8px] text-blue-400 font-bold block mb-1 uppercase tracking-widest">Detected Text</label>
-            <div id="ocr-result" class="text-xs break-all leading-relaxed">---</div>
+        <div id="ocr-result"
+            class="bg-slate-900 p-4 rounded-xl border border-slate-800 min-h-[5rem] text-xs whitespace-pre-wrap">---
         </div>
     </div>
 
@@ -48,83 +45,74 @@
         const logConsole = document.getElementById('log-console');
         const scanBtn = document.getElementById('scan-btn');
         const statusText = document.getElementById('setup-status');
+        let cvReady = false;
 
         function addLog(msg) {
             const line = document.createElement('div');
-            line.innerHTML = `<span class="text-slate-600">[${new Date().toLocaleTimeString()}]</span> ${msg}`;
+            line.innerHTML = `> ${msg}`;
             logConsole.appendChild(line);
             logConsole.scrollTop = logConsole.scrollHeight;
         }
 
-        addLog("🚀 App Hotfix Started.");
-
-        // OpenCV読み込み失敗時のセカンダリ・プラン
-        function trySecondaryOpenCV() {
-            addLog("⚠️ Primary OpenCV failed. Trying Backup CDN...");
-            const script = document.createElement('script');
-            // 別のミラーサイト (cdnjs等) を試行
-            script.src = "https://cdnjs.cloudflare.com/ajax/libs/opencv.js/4.5.1/opencv.js";
-            script.async = true;
-            script.onload = () => { addLog("✅ Backup OpenCV Loaded."); onOpenCvReady(); };
-            script.onerror = () => { addLog("❌ All OpenCV Sources Blocked."); statusText.innerText = "CRITICAL ERROR: CHECK CORS"; };
-            document.head.appendChild(script);
-        }
-
         function onOpenCvReady() {
-            statusText.innerText = "SYSTEM ONLINE";
-            statusText.className = "text-[9px] text-green-500 mt-1";
-            scanBtn.disabled = false;
-            scanBtn.innerText = "スキャン実行";
-            scanBtn.className = "w-full py-4 bg-blue-600 text-white rounded-xl font-black text-lg shadow-lg";
+            cvReady = true;
+            statusText.innerText = "HI-RES MODE";
+            statusText.className = "text-green-500 font-bold";
+            addLog("✨ Image Enhancement Engine Active.");
         }
 
-        // カメラ初期化
+        function onOpenCvFail() {
+            statusText.innerText = "BASIC MODE";
+            statusText.className = "text-yellow-500 font-bold";
+            addLog("ℹ️ Operating in Normal Mode (No Filters).");
+        }
+
         navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-            .then(s => { document.getElementById('video').srcObject = s; addLog("📷 Camera Ready."); })
-            .catch(e => addLog(`❌ Camera Error: ${e.message}`));
+            .then(s => { document.getElementById('video').srcObject = s; addLog("📷 Camera Active."); })
+            .catch(e => addLog("❌ Camera Error: Use HTTPS."));
 
         scanBtn.onclick = async () => {
-            document.getElementById('loader').classList.remove('hidden');
-            addLog("⚡ Starting Processing...");
-            
-            try {
-                const video = document.getElementById('video');
-                const canvas = document.createElement('canvas');
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(video, 0, 0);
+            addLog("⚡ Scanning...");
+            const video = document.getElementById('video');
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0);
 
-                // OpenCVが読み込まれている場合のみ画像処理を実行
-                if (typeof cv !== 'undefined' && cv.Mat) {
-                    addLog("🧠 OpenCV Processing...");
+            // OpenCVがある場合のみ高度なフィルタを適用
+            if (cvReady && typeof cv !== 'undefined') {
+                try {
+                    addLog("🧠 Applying Hi-Res Filters...");
                     let src = cv.imread(canvas);
                     let dst = new cv.Mat();
                     cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY, 0);
                     cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
                     cv.imshow('canvas-debug', dst);
                     src.delete(); dst.delete();
-                } else {
-                    addLog("⚠️ Skipping OpenCV (Not loaded). Using Raw Image.");
-                    const debugCanvas = document.getElementById('canvas-debug');
-                    debugCanvas.width = canvas.width;
-                    debugCanvas.height = canvas.height;
-                    debugCanvas.getContext('2d').drawImage(canvas, 0, 0);
+                } catch (e) {
+                    addLog("⚠️ Filter Error. Falling back...");
+                    ctx.drawImage(video, 0, 0); // そのままの画像を使用
                 }
+            } else {
+                addLog("🔍 Basic Recognition...");
+                const debugCanvas = document.getElementById('canvas-debug');
+                debugCanvas.width = canvas.width;
+                debugCanvas.height = canvas.height;
+                debugCanvas.getContext('2d').drawImage(canvas, 0, 0);
+            }
 
-                addLog("🔍 Tesseract OCR Running...");
+            try {
                 const worker = await Tesseract.createWorker('jpn+eng');
                 const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
                 await worker.terminate();
-
-                addLog("✨ Scan Complete.");
-                document.getElementById('ocr-result').innerText = text.trim() || "(Empty)";
-            } catch (err) {
-                addLog(`❌ Error: ${err.message}`);
-            } finally {
-                document.getElementById('loader').classList.add('hidden');
+                document.getElementById('ocr-result').innerText = text.trim() || "(No Text Detected)";
+                addLog("✅ Process Complete.");
+            } catch (e) {
+                addLog(`❌ OCR Error: ${e.message}`);
             }
         };
     </script>
 </body>
+
 </html>
