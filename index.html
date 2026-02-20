@@ -144,31 +144,22 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR最適化版 v10：AI-Assisted Hybrid) ---
+                // --- OpenCV 文字補修プロセス (OCR最適化版 v11：Stable Clarity) ---
                 let mat = cv.imread(roiCanvas);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 1. 背景除去 (Top-hat) 
-                let kKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(15, 15));
-                let blackhat = new cv.Mat();
-                cv.morphologyEx(mat, blackhat, cv.MORPH_BLACKHAT, kKernel);
-                cv.add(mat, blackhat, mat);
-                kKernel.delete(); blackhat.delete();
-
-                // 2. 超解像・情報の再構築 (概念的な実装：情報の密度を上げるための多段階スケーリング)
-                // 単純な1回のリサイズではなく、中間段階で鮮鋭化を挟む
-                let interSize = new cv.Size(Math.round(mat.cols * 1.5), Math.round(mat.rows * 1.5));
-                cv.resize(mat, mat, interSize, 0, 0, cv.INTER_CUBIC);
-
-                let kData = [0, -1, 0, -1, 5, -1, 0, -1, 0];
-                let kSharpen = cv.matFromArray(3, 3, cv.CV_32F, kData);
-                cv.filter2D(mat, mat, cv.CV_8U, kSharpen);
-                kSharpen.delete();
-
-                // 3. 輝度正規化
+                // 1. 強力なコントラスト改善 (正規化 + CLAHE)
                 cv.normalize(mat, mat, 0, 255, cv.NORM_MINMAX, cv.CV_8U);
+                let clahe = new cv.CLAHE(3.0, new cv.Size(8, 8));
+                clahe.apply(mat, mat);
+                clahe.delete();
 
-                // 4. 文字サイズに適応した最終スケーリング
+                // 2. バイラテラルフィルタ (エッジを保護して背景ノイズを消す)
+                let filtered = new cv.Mat();
+                cv.bilateralFilter(mat, filtered, 9, 75, 75, cv.BORDER_DEFAULT);
+                mat.delete(); mat = filtered;
+
+                // 3. 予備解析：文字サイズの検知
                 let tmp = new cv.Mat();
                 cv.adaptiveThreshold(mat, tmp, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 2);
                 let cnts = new cv.MatVector();
@@ -177,22 +168,30 @@
                 let sumH = 0, countH = 0;
                 for (let i = 0; i < cnts.size(); ++i) {
                     let r = cv.boundingRect(cnts.get(i));
-                    if (r.height > 10 && r.height < mat.rows * 0.9) { sumH += r.height; countH++; }
+                    if (r.height > 8 && r.height < mat.rows * 0.8) {
+                        sumH += r.height;
+                        countH++;
+                    }
                 }
-                let avgH = countH > 0 ? sumH / countH : 30;
+                let avgH = countH > 0 ? sumH / countH : 20;
                 cnts.delete(); hier.delete(); tmp.delete();
 
-                let scale = 50 / avgH; // 50px をターゲットにする (より詳細に)
-                let finalDSize = new cv.Size(Math.round(mat.cols * scale), Math.round(mat.rows * scale));
-                cv.resize(mat, mat, finalDSize, 0, 0, cv.INTER_LANCZOS4);
+                // 4. 適応的スケーリング (ターゲット文字高さ 42px)
+                let scale = 42 / avgH;
+                let targetH = Math.min(Math.max(mat.rows * scale, 400), 900);
+                let dsize = new cv.Size(Math.round(mat.cols * (targetH / mat.rows)), targetH);
+                cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
 
-                // 5. 最終的な二値化とノイズ保護
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 35, 2);
-                let kStruct = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
-                cv.morphologyEx(mat, mat, cv.MORPH_CLOSE, kStruct); // わずかなかすれを埋める
-                kStruct.delete();
+                // 5. 仕上げの鮮鋭化 (控えめ)
+                let blurred = new cv.Mat();
+                cv.GaussianBlur(mat, blurred, new cv.Size(0, 0), 1.5);
+                cv.addWeighted(mat, 1.4, blurred, -0.4, 0, mat);
+                blurred.delete();
 
-                // 6. 領域抽出と最適なマージン
+                // 6. 二値化 (ブロックサイズを21に絞って癒着を防ぐ)
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 4);
+
+                // 7. 領域抽出とクリーンアップ
                 let finalMat = new cv.Mat();
                 let found = false;
                 try {
@@ -221,27 +220,27 @@
 
                 if (!found) mat.copyTo(finalMat);
 
-                cv.copyMakeBorder(finalMat, finalMat, 80, 80, 80, 80, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
+                cv.copyMakeBorder(finalMat, finalMat, 50, 50, 50, 50, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
                 cv.bitwise_not(finalMat, finalMat);
 
-                // 8. OCR実行 + AIによる後補正
+                // 8. OCR実行 + AI後補正
                 cv.imshow('canvas-debug', finalMat);
-                const { data: { text, confidence } } = await worker.recognize(document.getElementById('canvas-debug'));
+                const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
 
                 let resultText = text.replace(/\s+/g, ' ').trim();
 
-                // 【補助AI】ブラウザ内蔵 AI (Gemini Nano) が利用可能な場合は自動補正
+                // ブラウザ内蔵 AI 補正 (オプション)
                 if (window.ai && window.ai.languageModel) {
                     try {
                         const session = await window.ai.languageModel.create();
-                        const prompt = `以下のOCR認識結果の誤字を修正し、意味の通る日本語1行のみを出力してください。\n入力：${resultText}`;
+                        const prompt = `OCR結果を正しい日本語に修正してください。1行のみ出力：${resultText}`;
                         const aiFixed = await session.prompt(prompt);
                         if (aiFixed) resultText = aiFixed.trim();
                         session.destroy();
-                    } catch (e) { console.log("AI Fix skipped:", e); }
+                    } catch (e) { }
                 }
 
-                ocrResult.innerText = resultText || "再試行してください";
+                ocrResult.innerText = resultText || "スキャンを再試行してください";
 
                 mat.delete();
                 finalMat.delete();
