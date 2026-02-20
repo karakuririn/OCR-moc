@@ -19,7 +19,7 @@
                 LOADING...</span>
             <span id="ocr-status" class="text-slate-500 text-[8px]">OCR: INITIALIZING...</span>
         </div>
-        <span class="text-orange-500 font-black italic tracking-widest">REPAIR MODE v5.0</span>
+        <span class="text-orange-500 font-black italic tracking-widest">REPAIR MODE v5.1</span>
     </div>
 
     <main class="max-w-md mx-auto pt-14 p-4 h-screen flex flex-col">
@@ -95,9 +95,9 @@
             ocrStatus.innerText = "OCR: LOADING JPN/ENG...";
             worker = await Tesseract.createWorker('jpn+eng', 1);
 
-            // 【重要】完全自動レイアウト解析 (PSM 3)
+            // 【重要】単一の均一なテキストブロックとして認識 (PSM 6: 日本語の漢字やかすれに強い)
             await worker.setParameters({
-                tessedit_pageseg_mode: '3',
+                tessedit_pageseg_mode: '6',
             });
 
             ocrStatus.innerText = "OCR: HYBRID READY";
@@ -144,7 +144,7 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR最適化版) ---
+                // --- OpenCV 文字補修プロセス (OCR最適化版 最終形態) ---
                 let mat = cv.imread(roiCanvas);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
@@ -153,18 +153,29 @@
                 let dsize = new cv.Size(800, Math.round(mat.rows * scale));
                 cv.resize(mat, mat, dsize, 0, 0, cv.INTER_CUBIC);
 
-                // 2. ノイズ除去 (軽いガウシアンぼかしでカメラ起因の微細なノイズを軽減)
-                cv.GaussianBlur(mat, mat, new cv.Size(3, 3), 0, 0, cv.BORDER_DEFAULT);
+                // 2. 照明ムラ補正 (CLAHE: コントラスト制限適応ヒストグラム平滑化)
+                // スマホの影や紙の黄ばみを均等にし、二値化の精度を飛躍的に向上させる
+                let clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
+                clahe.apply(mat, mat);
+                clahe.delete();
 
-                // 3. 適応的二値化 (白文字・黒背景として抽出)
-                // ブロックサイズを21、定数を10にし、かすれを残しつつ背景のチラつきを抑える
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 10);
+                // 3. ノイズ除去 (メディアンフィルタによるゴマ塩ノイズの除去)
+                // ガウシアンよりも文字のエッジ（輪郭）を保持しやすい
+                cv.medianBlur(mat, mat, 3);
 
-                // 4. かすれ修復 (モルフォロジー変換：Dilation /膨張処理によるかすれ接続)
-                // UI上は「Dilation Process」と記載されていたが実装されていなかったため追加
-                let M = cv.Mat.ones(2, 2, cv.CV_8U);
-                cv.dilate(mat, mat, M, new cv.Point(-1, -1), 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+                // 4. 適応的二値化 (白文字・黒背景として抽出)
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 25, 12);
+
+                // 5. かすれ修復 (モルフォロジー変換：クロージング処理)
+                // 膨張→収縮を一度に行うことで、漢字の隙間を潰さずに途切れた線を繋ぐ
+                let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+                cv.morphologyEx(mat, mat, cv.MORPH_CLOSE, M);
                 M.delete();
+
+                // より強固なかすれ補強のための軽いストローク強調 (膨張処理)
+                let M2 = cv.Mat.ones(2, 2, cv.CV_8U);
+                cv.dilate(mat, mat, M2, new cv.Point(-1, -1), 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+                M2.delete();
 
                 // 5. 領域抽出（文字がある部分だけを正確にクロップ）
                 let finalMat = new cv.Mat();
@@ -196,7 +207,7 @@
                                 minY = Math.max(0, minY - pad);
                                 maxX = Math.min(mat.cols, maxX + pad);
                                 maxY = Math.min(mat.rows, maxY + pad);
-                                
+
                                 let tightRect = new cv.Rect(minX, minY, maxX - minX, maxY - minY);
                                 let cropped = mat.roi(tightRect);
                                 cropped.copyTo(finalMat);
