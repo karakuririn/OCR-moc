@@ -144,33 +144,41 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR最適化版 v2) ---
+                // --- OpenCV 文字補修プロセス (OCR最適化版 v3：スケーリング重視) ---
                 let mat = cv.imread(roiCanvas);
+
+                // 1. スケーリング：高さを300pxに揃える (Tesseractの最適サイズ)
+                let scale = 300 / mat.rows;
+                let dsize = new cv.Size(Math.round(mat.cols * scale), 300);
+                cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
+
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 1. 二値化：反転させて文字を白にする
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 25, 10);
+                // 2. コントラスト強調 (CLAHE)
+                let tileGridSize = new cv.Size(8, 8);
+                let clahe = new cv.CLAHE(2.0, tileGridSize);
+                clahe.apply(mat, mat);
+                clahe.delete();
 
-                // 2. ノイズ除去：小さな点を除去
-                cv.medianBlur(mat, mat, 3);
+                // 3. 二値化：文字を白に反転
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 10);
 
-                // 3. 膨張処理：文字を太らせて繋ぐ
+                // 4. 文字分離の最適化（膨張を最小限に）
                 let kernel = cv.Mat.ones(2, 2, cv.CV_8U);
                 let anchor = new cv.Point(-1, -1);
-                cv.dilate(mat, mat, kernel, anchor, 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+                // 膨張はさせず、ごくわずかに形を整える程度にする
+                cv.morphologyEx(mat, mat, cv.MORPH_CLOSE, kernel, anchor, 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
                 kernel.delete();
 
-                // 4. マージン追加：Tesseractは文字が端にあると嫌うため余白を作る
+                // 5. マージン追加 (Tesseract用)
                 let borderedMat = new cv.Mat();
-                cv.copyMakeBorder(mat, borderedMat, 20, 20, 20, 20, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
+                cv.copyMakeBorder(mat, borderedMat, 30, 30, 30, 30, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
 
-                // 5. 反転：白背景に黒文字に戻す
+                // 6. 反転：白背景に黒文字
                 cv.bitwise_not(borderedMat, borderedMat);
 
-                // 6. デバッグ表示とOCR用への反映
+                // 7. デバッグ表示とOCR
                 cv.imshow('canvas-debug', borderedMat);
-
-                // OCR用にはdebugCanvasの結果（マージン付き）を渡す
                 const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
 
                 mat.delete();
