@@ -3,43 +3,42 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>高精度OCRハック V2.2 - HotFix</title>
+    <title>DEBUG OCR - Executive Strategic Partner</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-    <script async src="https://docs.opencv.org/4.5.4/opencv.js" id="opencv-js" onload="onOpenCvReady();" onerror="onOpenCvError();"></script>
+    <script async src="https://docs.opencv.org/4.5.4/opencv.js" id="opencv-js" 
+            onload="addLog('✅ OpenCV.js Loaded'); onOpenCvReady();" 
+            onerror="addLog('❌ OpenCV.js Load Failed');"></script>
 </head>
-<body class="bg-black text-slate-100 min-h-screen p-4">
+<body class="bg-slate-950 text-slate-100 min-h-screen p-4 font-mono">
 
-    <header class="max-w-md mx-auto mb-6 text-center">
-        <h1 class="text-2xl font-black italic text-blue-500 tracking-tighter">PRECISION OCR v2.2</h1>
-        <div id="setup-status" class="text-[10px] text-yellow-500 font-bold mt-2">
-            WAITING FOR SYSTEM...
-        </div>
+    <header class="max-w-md mx-auto mb-4 border-b border-slate-800 pb-2">
+        <h1 class="text-xl font-black text-blue-500 italic">SYSTEM DEBUG MODE v2.3</h1>
     </header>
 
-    <div class="max-w-md mx-auto bg-slate-900 rounded-3xl p-2 border border-slate-800">
-        <div class="relative rounded-2xl overflow-hidden aspect-video bg-black">
+    <div class="max-w-md mx-auto bg-slate-900 rounded-2xl p-2 border border-slate-800 shadow-2xl">
+        <div class="relative rounded-xl overflow-hidden aspect-video bg-black">
             <video id="video" autoplay playsinline class="w-full h-full object-cover"></video>
             <div id="loader" class="absolute inset-0 bg-black/80 flex flex-col items-center justify-center hidden">
-                <div class="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                <p class="mt-4 text-xs font-bold text-blue-400">ANALYZING...</p>
+                <div class="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                <p class="mt-4 text-[10px] font-bold text-blue-400">PROCESSING...</p>
             </div>
         </div>
     </div>
 
-    <div class="max-w-md mx-auto mt-6 space-y-4">
-        <button id="scan-btn" disabled class="w-full py-5 bg-slate-700 text-slate-400 rounded-2xl font-black text-xl transition-all">
-            INITIALIZING AI...
+    <div class="max-w-md mx-auto mt-4 bg-black border border-slate-700 rounded-lg p-2 h-40 overflow-y-auto text-[10px] leading-relaxed shadow-inner" id="log-console">
+        <div class="text-green-500 font-bold border-b border-slate-800 mb-1 pb-1">-- SYSTEM LOG TERMINAL --</div>
+    </div>
+
+    <div class="max-w-md mx-auto mt-4 space-y-3">
+        <button id="scan-btn" disabled class="w-full py-4 bg-slate-800 text-slate-500 rounded-xl font-black text-lg transition-all">
+            WAITING FOR INITIALIZE...
         </button>
 
-        <div class="grid grid-cols-2 gap-2">
-            <div class="bg-slate-900 p-3 rounded-xl border border-slate-800">
-                <label class="text-[10px] text-blue-400 font-bold block mb-1">SN / CODE</label>
-                <input id="code-output" type="text" readonly class="w-full bg-transparent text-lg font-mono outline-none">
-            </div>
-            <div class="bg-slate-900 p-3 rounded-xl border border-slate-800">
-                <label class="text-[10px] text-blue-400 font-bold block mb-1">DATE / VAL</label>
-                <input id="date-output" type="text" readonly class="w-full bg-transparent text-lg font-mono outline-none">
+        <div class="grid grid-cols-1 gap-2">
+            <div class="bg-slate-900 p-3 rounded-lg border border-slate-800">
+                <label class="text-[8px] text-blue-400 font-bold block mb-1">OCR RESULT:</label>
+                <div id="ocr-result" class="text-sm font-bold min-h-[1.5rem]">---</div>
             </div>
         </div>
     </div>
@@ -47,69 +46,86 @@
     <canvas id="canvas-debug" class="hidden"></canvas>
 
     <script>
-        const video = document.getElementById('video');
+        const logConsole = document.getElementById('log-console');
         const scanBtn = document.getElementById('scan-btn');
-        const statusText = document.getElementById('setup-status');
+        const ocrResult = document.getElementById('ocr-result');
         const loader = document.getElementById('loader');
 
-        // OpenCVロード管理
+        // ログ追加関数
+        function addLog(msg) {
+            const now = new Date();
+            const time = `${now.getHours()}:${now.getMinutes()}:${now.getSeconds()}`;
+            const line = document.createElement('div');
+            line.innerHTML = `<span class="text-slate-500">[${time}]</span> ${msg}`;
+            logConsole.appendChild(line);
+            logConsole.scrollTop = logConsole.scrollHeight;
+            console.log(`[LOG] ${msg}`);
+        }
+
+        addLog("🚀 App Started.");
+
+        // OpenCVロード完了
         function onOpenCvReady() {
-            console.log('OpenCV.js is ready.');
-            statusText.innerText = "SYSTEM READY - READY TO SCAN";
-            statusText.className = "text-[10px] text-green-500 font-bold mt-2";
+            addLog("✅ OpenCV Kernel Initialized.");
             scanBtn.disabled = false;
             scanBtn.innerText = "スキャン実行";
-            scanBtn.className = "w-full py-5 bg-blue-600 text-white rounded-2xl font-black text-xl shadow-lg";
+            scanBtn.className = "w-full py-4 bg-blue-600 text-white rounded-xl font-black text-lg shadow-lg";
         }
 
-        function onOpenCvError() {
-            statusText.innerText = "OpenCV Load Failed. Please Refresh.";
-            statusText.className = "text-[10px] text-red-500 font-bold mt-2";
-        }
-
-        // カメラ起動 (HTTPS環境必須)
-        navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'environment' } 
-        }).then(s => {
-            video.srcObject = s;
-        }).catch(e => {
-            statusText.innerText = "CAMERA ACCESS DENIED (Use HTTPS)";
-            statusText.className = "text-[10px] text-red-500 font-bold mt-2";
-        });
+        // カメラ初期化
+        addLog("📷 Requesting Camera Access...");
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+            .then(s => {
+                document.getElementById('video').srcObject = s;
+                addLog("✅ Camera Stream Connected.");
+            })
+            .catch(e => {
+                addLog(`❌ Camera Error: ${e.message}`);
+                addLog("⚠️ HTTPS環境か確認してください。");
+            });
 
         scanBtn.onclick = async () => {
+            addLog("🖱 Scan Button Clicked.");
             loader.classList.remove('hidden');
             
             try {
+                const video = document.getElementById('video');
                 const canvas = document.createElement('canvas');
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(video, 0, 0);
+                addLog(`📸 Frame Captured: ${canvas.width}x${canvas.height}`);
 
-                // OpenCVによる二値化処理
+                // OpenCV前処理
+                addLog("🧠 Applying OpenCV Filters...");
                 let src = cv.imread(canvas);
                 let dst = new cv.Mat();
                 cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY, 0);
                 cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
                 cv.imshow('canvas-debug', dst);
+                addLog("✅ Pre-processing Done.");
 
-                // Tesseract実行 (安定モード)
-                // workerOptionsを指定しないことで、SameOrigin問題を回避
-                const worker = await Tesseract.createWorker('jpn+eng');
+                // Tesseract
+                addLog("🔍 Initializing Tesseract Worker...");
+                const worker = await Tesseract.createWorker('jpn+eng', 1, {
+                    logger: m => {
+                        if(m.status === 'recognizing text') {
+                            addLog(`⏳ OCR Progress: ${Math.round(m.progress * 100)}%`);
+                        }
+                    }
+                });
+                
+                addLog("📖 Executing Recognition...");
                 const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
                 await worker.terminate();
 
-                const codeMatch = text.match(/[A-Z0-9-]{5,}/g);
-                const dateMatch = text.match(/\d{4}[/.-]\d{1,2}[/.-]\d{1,2}/g);
-
-                document.getElementById('code-output').value = codeMatch ? codeMatch[0] : "---";
-                document.getElementById('date-output').value = dateMatch ? dateMatch[0] : "---";
-
+                addLog("✨ Success!");
+                ocrResult.innerText = text || "(No Text Detected)";
+                
                 src.delete(); dst.delete();
             } catch (err) {
-                console.error(err);
-                alert("スキャン中にエラーが発生しました。");
+                addLog(`❌ ERROR: ${err.message}`);
             } finally {
                 loader.classList.add('hidden');
             }
