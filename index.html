@@ -144,13 +144,18 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR 正常化版 v5.1：Deskew) ---
+                // --- OpenCV 文字補修プロセス (OCR 正常化版 v5.2：Professional Polish) ---
+                /*
+                 * - [x] 自動傾き補正(Deskew)の実装とUIリブランディング (v5.1)
+                 * - [/] プロフェッショナル・ポリッシュと堅牢な領域抽出の実装 (v5.2)
+                 * - [ ] 最終的な精度検証と完了
+                 */
                 let mat = cv.imread(roiCanvas);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
                 // 1. 自動傾き補正 (Deskew)
                 let deskewMat = new cv.Mat();
-                cv.adaptiveThreshold(mat, deskewMat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 2);
+                cv.adaptiveThreshold(mat, deskewMat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2);
                 let contoursOrig = new cv.MatVector();
                 let hierarchyOrig = new cv.Mat();
                 cv.findContours(deskewMat, contoursOrig, hierarchyOrig, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
@@ -160,7 +165,7 @@
                     for (let i = 0; i < contoursOrig.size(); i++) {
                         let cnt = contoursOrig.get(i);
                         let area = cv.contourArea(cnt);
-                        if (area > 100) {
+                        if (area > 50) {
                             for (let j = 0; j < cnt.data32S.length; j += 2) {
                                 allPoints.push({ x: cnt.data32S[j], y: cnt.data32S[j + 1] });
                             }
@@ -182,21 +187,22 @@
                 }
                 deskewMat.delete(); contoursOrig.delete(); hierarchyOrig.delete();
 
-                // 2. 高解像度スケーリング (高さ500px)
-                let scale = 500 / mat.rows;
-                let dsize = new cv.Size(Math.round(mat.cols * scale), 500);
+                // 2. プロフェッショナル・スケーリング (高さ500px)
+                let targetH = 500;
+                let scale = targetH / mat.rows;
+                let dsize = new cv.Size(Math.round(mat.cols * scale), targetH);
                 cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
 
                 // 3. アンシャープマスキング
                 let blurred = new cv.Mat();
-                cv.GaussianBlur(mat, blurred, new cv.Size(0, 0), 3);
-                cv.addWeighted(mat, 1.5, blurred, -0.5, 0, mat);
+                cv.GaussianBlur(mat, blurred, new cv.Size(0, 0), 2);
+                cv.addWeighted(mat, 1.6, blurred, -0.6, 0, mat);
                 blurred.delete();
 
                 // 4. 二値化 (THRESH_BINARY_INV)
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 31, 2);
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 35, 2);
 
-                // 5. 領域抽出（クロップ）
+                // 5. 動的領域抽出 (Robust Region Extraction) - findNonZero を使わず findContours で安全に実装
                 let finalMat = new cv.Mat();
                 let foundRegion = false;
                 try {
@@ -204,16 +210,18 @@
                     let hierarchy = new cv.Mat();
                     cv.findContours(mat, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
                     if (contours.size() > 0) {
-                        let x1 = mat.cols, y1 = mat.rows, x2 = 0, y2 = 0;
+                        let minX = mat.cols, minY = mat.rows, maxX = 0, maxY = 0;
                         for (let i = 0; i < contours.size(); ++i) {
                             let rect = cv.boundingRect(contours.get(i));
                             if (rect.width > 3 && rect.height > 3) {
-                                x1 = Math.min(x1, rect.x); y1 = Math.min(y1, rect.y);
-                                x2 = Math.max(x2, rect.x + rect.width); y2 = Math.max(y2, rect.y + rect.height);
+                                minX = Math.min(minX, rect.x);
+                                minY = Math.min(minY, rect.y);
+                                maxX = Math.max(maxX, rect.x + rect.width);
+                                maxY = Math.max(maxY, rect.y + rect.height);
                             }
                         }
-                        if (x2 > x1 && y2 > y1) {
-                            let roiRect = new cv.Rect(x1, y1, x2 - x1, y2 - y1);
+                        if (maxX > minX && maxY > minY) {
+                            let roiRect = new cv.Rect(minX, minY, maxX - minX, maxY - minY);
                             let cropped = mat.roi(roiRect);
                             cropped.copyTo(finalMat);
                             cropped.delete();
@@ -221,18 +229,20 @@
                         }
                     }
                     contours.delete(); hierarchy.delete();
-                } catch (e) { console.warn(e); }
+                } catch (e) { console.warn("Region extraction failed:", e); }
 
+                // フォールバック
                 if (!foundRegion) mat.copyTo(finalMat);
 
                 // 6. 白マージン付与と反転
-                cv.copyMakeBorder(finalMat, finalMat, 40, 40, 40, 40, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
+                cv.copyMakeBorder(finalMat, finalMat, 50, 50, 50, 50, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
                 cv.bitwise_not(finalMat, finalMat);
 
-                // 7. 表示とOCR
+                // 7. 表示と認識
                 cv.imshow('canvas-debug', finalMat);
                 const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
 
+                // 8. メモリ解放
                 mat.delete();
                 finalMat.delete();
 
