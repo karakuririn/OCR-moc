@@ -95,9 +95,9 @@
             ocrStatus.innerText = "OCR: LOADING JPN/ENG...";
             worker = await Tesseract.createWorker('jpn+eng', 1);
 
-            // 【重要】単一のテキストブロックとして認識 (PSM 6)
+            // 【重要】完全自動レイアウト解析 (PSM 3)
             await worker.setParameters({
-                tessedit_pageseg_mode: '6',
+                tessedit_pageseg_mode: '3',
             });
 
             ocrStatus.innerText = "OCR: HYBRID READY";
@@ -144,40 +144,41 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR最適化版 v3：スケーリング重視) ---
+                // --- OpenCV 文字補修プロセス (OCR最適化版 v4：シャープネス重視) ---
                 let mat = cv.imread(roiCanvas);
 
-                // 1. スケーリング：高さを300pxに揃える (Tesseractの最適サイズ)
+                // 1. スケーリング (高さ300px)
                 let scale = 300 / mat.rows;
                 let dsize = new cv.Size(Math.round(mat.cols * scale), 300);
                 cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
 
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 2. コントラスト強調 (CLAHE)
-                let tileGridSize = new cv.Size(8, 8);
-                let clahe = new cv.CLAHE(2.0, tileGridSize);
+                // 2. シャープネスフィルタ：文字の境界を際立たせる
+                let kData = [0, -1, 0, -1, 5, -1, 0, -1, 0];
+                let kernelChar = cv.matFromArray(3, 3, cv.CV_32F, kData);
+                cv.filter2D(mat, mat, cv.CV_8U, kernelChar, new cv.Point(-1, -1), 0, cv.BORDER_DEFAULT);
+                kernelChar.delete();
+
+                // 3. コントラスト強調 (CLAHE)
+                let clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
                 clahe.apply(mat, mat);
                 clahe.delete();
 
-                // 3. 二値化：文字を白に反転
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 10);
+                // 4. 二値化：C=2 に緩和してかすれを拾う
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 2);
 
-                // 4. 文字分離の最適化（膨張を最小限に）
-                let kernel = cv.Mat.ones(2, 2, cv.CV_8U);
-                let anchor = new cv.Point(-1, -1);
-                // 膨張はさせず、ごくわずかに形を整える程度にする
-                cv.morphologyEx(mat, mat, cv.MORPH_CLOSE, kernel, anchor, 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
-                kernel.delete();
+                // 5. ノイズ除去（ごくわずか）
+                cv.medianBlur(mat, mat, 3);
 
-                // 5. マージン追加 (Tesseract用)
+                // 6. マージン追加 (50pxに拡大)
                 let borderedMat = new cv.Mat();
-                cv.copyMakeBorder(mat, borderedMat, 30, 30, 30, 30, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
+                cv.copyMakeBorder(mat, borderedMat, 50, 50, 50, 50, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
 
-                // 6. 反転：白背景に黒文字
+                // 7. 反転：白背景に黒文字
                 cv.bitwise_not(borderedMat, borderedMat);
 
-                // 7. デバッグ表示とOCR
+                // 8. デバッグ表示とOCR
                 cv.imshow('canvas-debug', borderedMat);
                 const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
 
