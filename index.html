@@ -144,69 +144,87 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR 正常化版 v12：Stable Vision) ---
+                // --- OpenCV 文字補修プロセス (OCR最適化版 v6：最終仕上げ) ---
                 let mat = cv.imread(roiCanvas);
+
+                // 1. 高解像度スケーリング (高さ500px)
+                let scale = 500 / mat.rows;
+                let dsize = new cv.Size(Math.round(mat.cols * scale), 500);
+                cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 1. ノイズ除去 (バイラテラル：輪郭を壊さずザラつきを消す)
+                // 2. アンシャープマスキング (エッジの極限強調)
+                let blurred = new cv.Mat();
+                cv.GaussianBlur(mat, blurred, new cv.Size(0, 0), 3);
+                cv.addWeighted(mat, 1.5, blurred, -0.5, 0, mat);
+                blurred.delete();
+
+                // 3. バイラテラルフィルタ (背景の清浄化)
                 let filtered = new cv.Mat();
                 cv.bilateralFilter(mat, filtered, 9, 75, 75, cv.BORDER_DEFAULT);
                 mat.delete(); mat = filtered;
 
-                // 2. コントラスト正規化 (明暗を整える)
-                cv.normalize(mat, mat, 0, 255, cv.NORM_MINMAX, cv.CV_8U);
+                // 4. 二値化 (THRESH_BINARY_INV)
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 31, 2);
 
-                // 3. 適応的なスケーリング (読みやすいサイズへの固定)
-                let scale = 400 / mat.rows; // 高さを400px前後に固定して安定させる
-                let dsize = new cv.Size(Math.round(mat.cols * scale), 400);
-                cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
-
-                // 4. 二値化 (ブロックサイズを大きくして「文字の中抜け」を防ぐ)
-                // ブロックサイズを大きめの 51 に設定
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 51, 10);
-
-                // 5. 領域抽出とクリーンアップ
+                // 5. 領域抽出（高度な処理：存在する場合のみ実行）
                 let finalMat = new cv.Mat();
-                let found = false;
+                let tableFound = false;
+
                 try {
-                    let contours = new cv.MatVector();
-                    let hierarchy = new cv.Mat();
-                    cv.findContours(mat, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-                    if (contours.size() > 0) {
-                        let x1 = mat.cols, y1 = mat.rows, x2 = 0, y2 = 0;
-                        for (let i = 0; i < contours.size(); ++i) {
-                            let rect = cv.boundingRect(contours.get(i));
-                            if (rect.width > 2 && rect.height > 2) {
-                                x1 = Math.min(x1, rect.x); y1 = Math.min(y1, rect.y);
-                                x2 = Math.max(x2, rect.x + rect.width); y2 = Math.max(y2, rect.y + rect.height);
+                    // findNonZeroがなくても、findContoursがあれば領域特定が可能
+                    if (typeof cv.findContours === 'function' && typeof cv.MatVector === 'function') {
+                        let contours = new cv.MatVector();
+                        let hierarchy = new cv.Mat();
+                        cv.findContours(mat, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+                        if (contours.size() > 0) {
+                            // 全ての輪郭を囲む外接矩形を計算
+                            let minX = mat.cols, minY = mat.rows, maxX = 0, maxY = 0;
+                            for (let i = 0; i < contours.size(); ++i) {
+                                let rect = cv.boundingRect(contours.get(i));
+                                minX = Math.min(minX, rect.x);
+                                minY = Math.min(minY, rect.y);
+                                maxX = Math.max(maxX, rect.x + rect.width);
+                                maxY = Math.max(maxY, rect.y + rect.height);
+                            }
+
+                            // 有効な範囲があればクロップ
+                            if (maxX > minX && maxY > minY) {
+                                let tightRect = new cv.Rect(minX, minY, maxX - minX, maxY - minY);
+                                let cropped = mat.roi(tightRect);
+                                cropped.copyTo(finalMat);
+                                cropped.delete();
+                                tableFound = true;
                             }
                         }
-                        if (x2 > x1 && y2 > y1) {
-                            let roi = new cv.Rect(x1, y1, x2 - x1, y2 - y1);
-                            let cropped = mat.roi(roi);
-                            cropped.copyTo(finalMat);
-                            cropped.delete();
-                            found = true;
-                        }
+                        contours.delete();
+                        hierarchy.delete();
                     }
-                    contours.delete(); hierarchy.delete();
-                } catch (e) { console.warn("ROI extraction fallback", e); }
+                } catch (e) {
+                    console.warn("Advanced region extraction failed, falling back.", e);
+                }
 
-                if (!found) mat.copyTo(finalMat);
+                if (!tableFound) {
+                    mat.copyTo(finalMat);
+                }
 
-                // 6. Tesseract用の白マージン追加と反転 (白背景に黒文字)
+                // 6. 最終調整（Tesseract用マージン追加）
                 cv.copyMakeBorder(finalMat, finalMat, 40, 40, 40, 40, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
+
+                // 7. 反転：白背景に黒文字
                 cv.bitwise_not(finalMat, finalMat);
 
-                // 7. 表示と認識
+                // 8. デバッグ表示とOCR
                 cv.imshow('canvas-debug', finalMat);
                 const { data: { text } } = await worker.recognize(document.getElementById('canvas-debug'));
 
-                // 結果の反映
-                ocrResult.innerText = text.replace(/\s+/g, ' ').trim() || "文字が検出できませんでした";
-
                 mat.delete();
                 finalMat.delete();
+
+                // 結果의 クリーンアップ
+                const cleanText = text.replace(/\s+/g, ' ').trim();
+                ocrResult.innerText = cleanText || "再試行してください（枠内に文字を収める）";
 
             } catch (err) {
                 console.error(err);
