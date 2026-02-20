@@ -3,103 +3,122 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>高精度OCRハック - Executive Strategic Partner</title>
+    <title>高精度OCRハック V2.1 - Safety Edition</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script async src="https://docs.opencv.org/4.5.4/opencv.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script async src="https://docs.opencv.org/4.5.4/opencv.js" onload="onOpenCvReady();"></script>
 </head>
 <body class="bg-black text-slate-100 min-h-screen p-4 font-sans">
 
     <header class="max-w-md mx-auto mb-6 text-center">
-        <h1 class="text-2xl font-black italic text-blue-500 tracking-tighter">PRCISION OCR v2</h1>
-        <p class="text-[10px] text-slate-500 uppercase tracking-[0.2em]">Edge Computing & Image Heuristics</p>
+        <h1 class="text-2xl font-black italic text-blue-500 tracking-tighter">PRECISION OCR v2.1</h1>
+        <div id="setup-status" class="text-[10px] text-yellow-500 font-bold mt-2">
+            SYSTEM INITIALIZING... (OpenCV: ⌛ / Tesseract: ⌛)
+        </div>
     </header>
 
     <div class="max-w-md mx-auto bg-slate-900 rounded-3xl p-2 shadow-2xl border border-slate-800">
         <div class="relative rounded-2xl overflow-hidden aspect-video bg-black">
             <video id="video" autoplay playsinline class="w-full h-full object-cover"></video>
-            <div class="absolute inset-0 border-2 border-blue-500/30 m-8 rounded-lg pointer-events-none"></div>
             <div id="loader" class="absolute inset-0 bg-black/80 flex flex-col items-center justify-center hidden">
                 <div class="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                <p class="mt-4 text-xs font-bold text-blue-400">画像解析・文脈矯正中...</p>
+                <p id="loader-text" class="mt-4 text-xs font-bold text-blue-400">解析中...</p>
             </div>
-        </div>
-        
-        <div class="mt-2 px-2 flex justify-between items-center text-[10px] text-slate-500">
-            <span>PRE-PROCESSED VIEW:</span>
-            <canvas id="canvas-debug" class="h-10 w-auto rounded border border-slate-700"></canvas>
         </div>
     </div>
 
     <div class="max-w-md mx-auto mt-6 space-y-4">
-        <button id="scan-btn" class="w-full py-5 bg-gradient-to-r from-blue-700 to-blue-500 rounded-2xl font-black text-xl shadow-[0_0_20px_rgba(59,130,246,0.5)] active:scale-95 transition-all">
-            スキャン実行
+        <button id="scan-btn" disabled class="w-full py-5 bg-slate-700 text-slate-400 rounded-2xl font-black text-xl shadow-lg transition-all cursor-not-allowed">
+            システム起動待ち
         </button>
 
         <div class="grid grid-cols-2 gap-2">
-            <div class="bg-slate-900 p-3 rounded-xl border border-slate-800">
-                <label class="text-[10px] text-blue-400 font-bold block mb-1">型番/シリアル (英数字)</label>
-                <input id="code-output" type="text" class="w-full bg-transparent text-lg font-mono outline-none" placeholder="---">
+            <div class="bg-slate-900 p-3 rounded-xl border border-slate-800 text-sm">
+                <label class="text-[10px] text-blue-400 font-bold block mb-1">型番/シリアル</label>
+                <input id="code-output" type="text" readonly class="w-full bg-transparent outline-none font-mono">
             </div>
-            <div class="bg-slate-900 p-3 rounded-xl border border-slate-800">
+            <div class="bg-slate-900 p-3 rounded-xl border border-slate-800 text-sm">
                 <label class="text-[10px] text-blue-400 font-bold block mb-1">日付/数値</label>
-                <input id="date-output" type="text" class="w-full bg-transparent text-lg font-mono outline-none" placeholder="---">
+                <input id="date-output" type="text" readonly class="w-full bg-transparent outline-none font-mono">
             </div>
         </div>
-
-        <textarea id="raw-output" class="w-full h-24 bg-slate-900/50 text-slate-400 p-3 rounded-xl border border-slate-800 text-xs mt-2" readonly placeholder="Raw Metadata..."></textarea>
     </div>
 
     <canvas id="canvas-proc" class="hidden"></canvas>
+    <canvas id="canvas-debug" class="hidden"></canvas>
 
     <script>
         const video = document.getElementById('video');
-        const canvasProc = document.getElementById('canvas-proc');
-        const canvasDebug = document.getElementById('canvas-debug');
+        const scanBtn = document.getElementById('scan-btn');
+        const statusText = document.getElementById('setup-status');
         const loader = document.getElementById('loader');
+        
+        let isCvReady = false;
 
-        // カメラ初期化（組織ハック：背面カメラ固定）
-        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }).then(s => video.srcObject = s);
+        // 1. OpenCV読み込み完了コールバック
+        function onOpenCvReady() {
+            isCvReady = true;
+            checkReady();
+        }
 
-        document.getElementById('scan-btn').onclick = async () => {
+        // 2. Tesseract準備
+        async function checkReady() {
+            if (isCvReady) {
+                statusText.innerText = "SYSTEM READY - READY TO SCAN";
+                statusText.classList.replace('text-yellow-500', 'text-green-500');
+                scanBtn.disabled = false;
+                scanBtn.innerText = "スキャン実行";
+                scanBtn.classList.replace('bg-slate-700', 'bg-blue-600');
+                scanBtn.classList.replace('text-slate-400', 'text-white');
+                scanBtn.classList.remove('cursor-not-allowed');
+            }
+        }
+
+        // 3. カメラ初期化
+        navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'environment' } 
+        }).then(s => video.srcObject = s).catch(err => {
+            statusText.innerText = "CAMERA ERROR: HTTPS環境が必要です";
+            statusText.classList.add('text-red-500');
+        });
+
+        // 4. 解析実行
+        scanBtn.onclick = async () => {
             loader.classList.remove('hidden');
-            
-            // 1. 画像キャプチャ
-            const ctx = canvasProc.getContext('2d');
-            canvasProc.width = video.videoWidth;
-            canvasProc.height = video.videoHeight;
-            ctx.drawImage(video, 0, 0);
+            try {
+                const canvas = document.getElementById('canvas-proc');
+                const ctx = canvas.getContext('2d');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0);
 
-            // 2. OpenCVによる前処理（精度のコア）
-            let src = cv.imread(canvasProc);
-            let dst = new cv.Mat();
-            
-            // 【なぜ】カラー情報はOCRに不要で、むしろノイズになる。
-            // 【だから】グレースケール化。
-            cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY, 0);
+                // OpenCV前処理
+                let src = cv.imread(canvas);
+                let dst = new cv.Mat();
+                cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY, 0);
+                cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
+                cv.imshow('canvas-debug', dst);
 
-            // 【なぜ】照明のムラがあるとAIが文字を見失う。
-            // 【だから】適応的二値化（Adaptive Threshold）で文字を浮き立たせる。
-            cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
+                // OCR (日本語+英語)
+                const { data: { text } } = await Tesseract.recognize(
+                    document.getElementById('canvas-debug'),
+                    'jpn+eng'
+                );
 
-            // デバッグ表示
-            cv.imshow(canvasDebug, dst);
+                // 文脈矯正
+                const codeMatch = text.match(/[A-Z0-9-]{5,}/g);
+                const dateMatch = text.match(/\d{4}[/.-]\d{1,2}[/.-]\d{1,2}/g);
 
-            // 3. OCR実行
-            const { data: { text } } = await Tesseract.recognize(canvasDebug, 'eng+jpn');
-            
-            // 4. 文脈ハック：正規表現によるクリーニング
-            // 【なぜ】OCRは「S」を「5」、「I」を「1」に誤読しやすい。
-            // 【だから】データの型（英数字のみ、日付形式のみ）で強制フィルタリングする。
-            const codeMatch = text.match(/[A-Z0-9-]{5,}/g); // 5文字以上の英数字
-            const dateMatch = text.match(/\d{4}[/.-]\d{1,2}[/.-]\d{1,2}/g); // 日付形式
+                document.getElementById('code-output').value = codeMatch ? codeMatch[0] : "未検出";
+                document.getElementById('date-output').value = dateMatch ? dateMatch[0] : "---";
 
-            document.getElementById('code-output').value = codeMatch ? codeMatch[0] : "未検出";
-            document.getElementById('date-output').value = dateMatch ? dateMatch[0] : "---";
-            document.getElementById('raw-output').value = text;
-
-            loader.classList.add('hidden');
-            src.delete(); dst.delete();
+                src.delete(); dst.delete();
+            } catch (err) {
+                console.error(err);
+                alert("解析エラーが発生しました。");
+            } finally {
+                loader.classList.add('hidden');
+            }
         };
     </script>
 </body>
