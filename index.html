@@ -144,53 +144,59 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR最適化版 v6：最終仕上げ) ---
+                // --- OpenCV 文字補修プロセス (OCR最適化版) ---
                 let mat = cv.imread(roiCanvas);
-
-                // 1. 高解像度スケーリング (高さ500px)
-                let scale = 500 / mat.rows;
-                let dsize = new cv.Size(Math.round(mat.cols * scale), 500);
-                cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 2. アンシャープマスキング (エッジの極限強調)
-                let blurred = new cv.Mat();
-                cv.GaussianBlur(mat, blurred, new cv.Size(0, 0), 3);
-                cv.addWeighted(mat, 1.5, blurred, -0.5, 0, mat);
-                blurred.delete();
+                // 1. スケーリング (適度な高解像度化, 幅800px固定でアスペクト比を維持)
+                let scale = 800 / mat.cols;
+                let dsize = new cv.Size(800, Math.round(mat.rows * scale));
+                cv.resize(mat, mat, dsize, 0, 0, cv.INTER_CUBIC);
 
-                // 3. バイラテラルフィルタ (背景の清浄化)
-                let filtered = new cv.Mat();
-                cv.bilateralFilter(mat, filtered, 9, 75, 75, cv.BORDER_DEFAULT);
-                mat.delete(); mat = filtered;
+                // 2. ノイズ除去 (軽いガウシアンぼかしでカメラ起因の微細なノイズを軽減)
+                cv.GaussianBlur(mat, mat, new cv.Size(3, 3), 0, 0, cv.BORDER_DEFAULT);
 
-                // 4. 二値化 (THRESH_BINARY_INV)
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 31, 2);
+                // 3. 適応的二値化 (白文字・黒背景として抽出)
+                // ブロックサイズを21、定数を10にし、かすれを残しつつ背景のチラつきを抑える
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 10);
 
-                // 5. 領域抽出（高度な処理：存在する場合のみ実行）
+                // 4. かすれ修復 (モルフォロジー変換：Dilation /膨張処理によるかすれ接続)
+                // UI上は「Dilation Process」と記載されていたが実装されていなかったため追加
+                let M = cv.Mat.ones(2, 2, cv.CV_8U);
+                cv.dilate(mat, mat, M, new cv.Point(-1, -1), 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+                M.delete();
+
+                // 5. 領域抽出（文字がある部分だけを正確にクロップ）
                 let finalMat = new cv.Mat();
                 let tableFound = false;
 
                 try {
-                    // findNonZeroがなくても、findContoursがあれば領域特定が可能
                     if (typeof cv.findContours === 'function' && typeof cv.MatVector === 'function') {
                         let contours = new cv.MatVector();
                         let hierarchy = new cv.Mat();
                         cv.findContours(mat, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
                         if (contours.size() > 0) {
-                            // 全ての輪郭を囲む外接矩形を計算
                             let minX = mat.cols, minY = mat.rows, maxX = 0, maxY = 0;
                             for (let i = 0; i < contours.size(); ++i) {
                                 let rect = cv.boundingRect(contours.get(i));
-                                minX = Math.min(minX, rect.x);
-                                minY = Math.min(minY, rect.y);
-                                maxX = Math.max(maxX, rect.x + rect.width);
-                                maxY = Math.max(maxY, rect.y + rect.height);
+                                // 極端に小さいノイズは除外してBounding Boxを計算
+                                if (rect.height > 8 && rect.width > 8) {
+                                    minX = Math.min(minX, rect.x);
+                                    minY = Math.min(minY, rect.y);
+                                    maxX = Math.max(maxX, rect.x + rect.width);
+                                    maxY = Math.max(maxY, rect.y + rect.height);
+                                }
                             }
 
-                            // 有効な範囲があればクロップ
                             if (maxX > minX && maxY > minY) {
+                                // 少し余裕を持たせてクロップ (padding)
+                                let pad = 10;
+                                minX = Math.max(0, minX - pad);
+                                minY = Math.max(0, minY - pad);
+                                maxX = Math.min(mat.cols, maxX + pad);
+                                maxY = Math.min(mat.rows, maxY + pad);
+                                
                                 let tightRect = new cv.Rect(minX, minY, maxX - minX, maxY - minY);
                                 let cropped = mat.roi(tightRect);
                                 cropped.copyTo(finalMat);
@@ -209,10 +215,10 @@
                     mat.copyTo(finalMat);
                 }
 
-                // 6. 最終調整（Tesseract用マージン追加）
+                // 6. 余白の追加（Tesseractは周囲に十分な余白がないと認識率が落ちる）
                 cv.copyMakeBorder(finalMat, finalMat, 40, 40, 40, 40, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
 
-                // 7. 反転：白背景に黒文字
+                // 7. 反転処理：白背景に黒文字にする (最終的にOCRエンジンが最も得意とする形式)
                 cv.bitwise_not(finalMat, finalMat);
 
                 // 8. デバッグ表示とOCR
