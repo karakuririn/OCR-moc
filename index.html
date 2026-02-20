@@ -144,75 +144,77 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (OCR最適化版 v6：最終仕上げ) ---
+                // --- OpenCV 文字補修プロセス (OCR最適化版 v7：God Mode) ---
                 let mat = cv.imread(roiCanvas);
 
-                // 1. 高解像度スケーリング (高さ500px)
-                let scale = 500 / mat.rows;
-                let dsize = new cv.Size(Math.round(mat.cols * scale), 500);
+                // 1. 高解像度スケーリング (高さ600px)
+                let scale = 600 / mat.rows;
+                let dsize = new cv.Size(Math.round(mat.cols * scale), 600);
                 cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 2. アンシャープマスキング (エッジの極限強調)
+                // 2. ガンマ補正：照明のムラを補正 (Gamma = 1.2)
+                let lut = new cv.Mat(1, 256, cv.CV_8U);
+                let gamma = 1.2;
+                for (let i = 0; i < 256; i++) {
+                    lut.data[i] = Math.pow(i / 255.0, 1.0 / gamma) * 255.0;
+                }
+                cv.LUT(mat, lut, mat);
+                lut.delete();
+
+                // 3. アンシャープマスキング + ラプラス強調 (エッジの極限強調)
                 let blurred = new cv.Mat();
                 cv.GaussianBlur(mat, blurred, new cv.Size(0, 0), 3);
                 cv.addWeighted(mat, 1.5, blurred, -0.5, 0, mat);
-                blurred.delete();
 
-                // 3. バイラテラルフィルタ (背景の清浄化)
+                let laplacian = new cv.Mat();
+                cv.Laplacian(mat, laplacian, cv.CV_8U, 1, 1, 0, cv.BORDER_DEFAULT);
+                cv.subtract(mat, laplacian, mat);
+                blurred.delete(); laplacian.delete();
+
+                // 4. バイラテラルフィルタ (背景の清浄化)
                 let filtered = new cv.Mat();
                 cv.bilateralFilter(mat, filtered, 9, 75, 75, cv.BORDER_DEFAULT);
                 mat.delete(); mat = filtered;
 
-                // 4. 二値化 (THRESH_BINARY_INV)
+                // 5. 二値化 (最適化)
                 cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 31, 2);
 
-                // 5. 領域抽出（高度な処理：存在する場合のみ実行）
+                // 6. 領域抽出とタイトなクロップ (findContours)
                 let finalMat = new cv.Mat();
-                let tableFound = false;
-
+                let regionFound = false;
                 try {
-                    // findNonZeroがなくても、findContoursがあれば領域特定が可能
-                    if (typeof cv.findContours === 'function' && typeof cv.MatVector === 'function') {
+                    if (typeof cv.findContours === 'function') {
                         let contours = new cv.MatVector();
                         let hierarchy = new cv.Mat();
                         cv.findContours(mat, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
                         if (contours.size() > 0) {
-                            // 全ての輪郭を囲む外接矩形を計算
                             let minX = mat.cols, minY = mat.rows, maxX = 0, maxY = 0;
                             for (let i = 0; i < contours.size(); ++i) {
                                 let rect = cv.boundingRect(contours.get(i));
-                                minX = Math.min(minX, rect.x);
-                                minY = Math.min(minY, rect.y);
-                                maxX = Math.max(maxX, rect.x + rect.width);
-                                maxY = Math.max(maxY, rect.y + rect.height);
+                                if (rect.width > 2 && rect.height > 2) { // 極小ノイズを排除
+                                    minX = Math.min(minX, rect.x);
+                                    minY = Math.min(minY, rect.y);
+                                    maxX = Math.max(maxX, rect.x + rect.width);
+                                    maxY = Math.max(maxY, rect.y + rect.height);
+                                }
                             }
-
-                            // 有効な範囲があればクロップ
                             if (maxX > minX && maxY > minY) {
                                 let tightRect = new cv.Rect(minX, minY, maxX - minX, maxY - minY);
                                 let cropped = mat.roi(tightRect);
                                 cropped.copyTo(finalMat);
                                 cropped.delete();
-                                tableFound = true;
+                                regionFound = true;
                             }
                         }
-                        contours.delete();
-                        hierarchy.delete();
+                        contours.delete(); hierarchy.delete();
                     }
-                } catch (e) {
-                    console.warn("Advanced region extraction failed, falling back.", e);
-                }
+                } catch (e) { console.warn(e); }
 
-                if (!tableFound) {
-                    mat.copyTo(finalMat);
-                }
+                if (!regionFound) mat.copyTo(finalMat);
 
-                // 6. 最終調整（Tesseract用マージン追加）
-                cv.copyMakeBorder(finalMat, finalMat, 40, 40, 40, 40, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
-
-                // 7. 反転：白背景に黒文字
+                // 7. 最終調整：マージン 50px + 反転
+                cv.copyMakeBorder(finalMat, finalMat, 50, 50, 50, 50, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
                 cv.bitwise_not(finalMat, finalMat);
 
                 // 8. デバッグ表示とOCR
