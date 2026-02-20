@@ -177,8 +177,8 @@
 
                 // 4. 適応的二値化 (Adaptive Threshold) のみ
                 // 大津も使わず、シンプルに局所的な明度差だけを白黒にする。
-                // 繊細に拾うため、ブロックサイズは標準的な（41）、C定数はノイズ防止のため（10）に設定。
-                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 41, 10);
+                // 繊細に拾いつつ薄い文字も浮き上がらせるため、ブロックサイズは標準的な（41）、C定数は少し感度を上げて（7）に微調整。
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 41, 7);
 
                 // 【破壊的処理の全廃】
                 // ❌ cv.morphologyEx（形が潰れるから廃止）
