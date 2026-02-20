@@ -1,27 +1,178 @@
-<script>
-    // 【変更】エンジンの常駐化（ボタンを押す前に準備を済ませる）
-    let globalWorker = null;
-    async function initWorker() {
-        globalWorker = await Tesseract.createWorker('jpn+eng');
-        addLog("✅ OCR Engine Standby.");
-    }
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>HI-SPEED OCR v5.1</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script async src="opencv_v1.js" onload="onOpenCvReady();"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-mono text-[10px] overflow-hidden">
 
-    // 【変更】スキャン実行部分のロジック
-    scanBtn.onclick = async () => {
-        // 1. ガイド枠の部分だけを切り抜き（クロップ）
-        const cropX = canvas.width * 0.1; // 左右10%を除外
-        const cropY = canvas.height * 0.4; // 上下の中央付近だけ抽出
-        const cropW = canvas.width * 0.8;
-        const cropH = canvas.height * 0.2;
+    <div class="fixed top-0 left-0 right-0 z-50 bg-black/80 backdrop-blur p-2 border-b border-slate-800 flex justify-between items-center">
+        <div class="flex flex-col">
+            <span id="setup-status" class="text-red-500 font-bold tracking-tighter text-[9px]">● ENGINE LOADING...</span>
+            <span id="ocr-status" class="text-slate-500 text-[8px]">OCR: INITIALIZING...</span>
+        </div>
+        <span class="text-blue-500 font-black italic">v5.1 SPEED-MASTER</span>
+    </div>
+
+    <main class="max-w-md mx-auto pt-12 p-4 h-screen flex flex-col">
         
-        const croppedCanvas = document.createElement('canvas');
-        croppedCanvas.width = cropW;
-        croppedCanvas.height = cropH;
-        const croppedCtx = croppedCanvas.getContext('2d');
-        croppedCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+        <div class="relative rounded-3xl overflow-hidden aspect-[4/3] bg-black shadow-2xl border border-slate-800 shrink-0">
+            <video id="video" autoplay playsinline class="w-full h-full object-cover"></video>
+            
+            <div class="absolute inset-0 flex items-center justify-center">
+                <div class="w-[85%] h-20 border-2 border-blue-500 rounded-lg shadow-[0_0_15px_rgba(59,130,246,0.5)] flex items-center justify-center bg-blue-500/10">
+                    <div class="w-full h-[1px] bg-blue-400/50 animate-pulse"></div>
+                </div>
+            </div>
 
-        // 2. 切り抜いた「軽い画像」だけを解析に回す
-        const { data: { text } } = await globalWorker.recognize(croppedCanvas);
-        // ...
-    };
-</script>
+            <div id="loader" class="absolute inset-0 bg-black/80 flex flex-col items-center justify-center hidden">
+                <div class="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                <p id="progress-text" class="mt-4 text-blue-400 font-bold uppercase tracking-widest">Reading...</p>
+            </div>
+        </div>
+
+        <div class="mt-3 bg-slate-900 rounded-xl p-2 border border-slate-800 shrink-0">
+            <div class="flex justify-between items-center mb-1">
+                <p class="text-[8px] text-slate-500 uppercase font-bold">AI Focus View</p>
+                <p class="text-[7px] text-slate-600 italic text-right text-[7px]">枠内の文字を認識します</p>
+            </div>
+            <canvas id="canvas-debug" class="w-full h-14 bg-black rounded object-contain border border-slate-800"></canvas>
+        </div>
+
+        <div class="mt-4 flex-grow flex flex-col space-y-3 min-h-0">
+            <button id="scan-btn" disabled class="w-full py-5 bg-slate-800 text-slate-500 rounded-2xl font-black text-xl transition-all shadow-lg active:scale-95 shrink-0">
+                BOOTING...
+            </button>
+            
+            <div class="bg-slate-900 p-4 rounded-2xl border border-slate-800 flex-grow overflow-y-auto relative shadow-inner">
+                <label class="absolute -top-2 left-4 px-2 bg-slate-950 text-blue-400 text-[8px] font-bold uppercase tracking-widest">Extracted Text</label>
+                <div id="ocr-result" class="text-xs leading-relaxed break-all whitespace-pre-wrap pt-2 text-slate-200">
+                    エンジンの準備が完了したら、青い枠に文字を合わせてボタンを押してください
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <canvas id="canvas-proc" class="hidden"></canvas>
+
+    <script>
+        const video = document.getElementById('video');
+        const scanBtn = document.getElementById('scan-btn');
+        const ocrResult = document.getElementById('ocr-result');
+        const loader = document.getElementById('loader');
+        const progressText = document.getElementById('progress-text');
+        const debugCanvas = document.getElementById('canvas-debug');
+        const setupStatus = document.getElementById('setup-status');
+        const ocrStatus = document.getElementById('ocr-status');
+
+        let cvReady = false;
+        let worker = null;
+
+        // 1. OpenCVエンジンの準備
+        function onOpenCvReady() {
+            cvReady = true;
+            setupStatus.innerText = "● CV READY";
+            setupStatus.classList.replace('text-red-500', 'text-green-500');
+            checkEngines();
+        }
+
+        // 2. Tesseractエンジンの常駐化（スピードアップの要）
+        async function initOCR() {
+            ocrStatus.innerText = "OCR: LOADING WORKER...";
+            // 銘板やラベルに特化する場合、英数字のみにするなら 'eng' にすると更に速いです
+            worker = await Tesseract.createWorker('jpn+eng', 1, {
+                cacheMethod: 'readOnly'
+            });
+            ocrStatus.innerText = "OCR: WORKER READY";
+            ocrStatus.className = "text-green-500 text-[8px]";
+            checkEngines();
+        }
+
+        function checkEngines() {
+            if (cvReady && worker) {
+                scanBtn.disabled = false;
+                scanBtn.innerText = "スキャン実行";
+                scanBtn.classList.replace('bg-slate-800', 'bg-blue-600');
+                scanBtn.classList.replace('text-slate-500', 'text-white');
+            }
+        }
+
+        // カメラ開始
+        navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
+        }).then(s => video.srcObject = s);
+
+        // エンジン初期化開始
+        initOCR();
+
+        // メイン処理
+        scanBtn.onclick = async () => {
+            if (!cvReady || !worker) return;
+
+            loader.classList.remove('hidden');
+            ocrResult.innerText = "解析中...";
+            
+            try {
+                const canvas = document.getElementById('canvas-proc');
+                const ctx = canvas.getContext('2d');
+                
+                // 元画像のキャプチャ
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                // --- 部分スキャン(ROI)ハック ---
+                // 青い枠（中央付近）の位置を計算
+                const roiW = canvas.width * 0.85;
+                const roiH = canvas.height * 0.20;
+                const roiX = (canvas.width - roiW) / 2;
+                const roiY = (canvas.height - roiH) / 2;
+
+                // ワーク用のキャンバスを作成
+                const roiCanvas = document.createElement('canvas');
+                roiCanvas.width = roiW;
+                roiCanvas.height = roiH;
+                const roiCtx = roiCanvas.getContext('2d');
+                roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
+
+                // --- OpenCV 前処理 ---
+                let mat = cv.imread(roiCanvas);
+                
+                // グレースケール
+                cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
+                
+                // コントラスト調整 & 鮮鋭化
+                cv.GaussianBlur(mat, mat, new cv.Size(0, 0), 3);
+                cv.addWeighted(mat, 1.5, mat, -0.5, 0, mat);
+
+                // 適応的二値化（文字を浮かび上がらせる）
+                cv.adaptiveThreshold(mat, mat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 7);
+                
+                // デバッグ用表示（ユーザーに枠内を見せる）
+                cv.imshow('canvas-debug', mat);
+                
+                // 解析用キャンバスに書き戻し
+                cv.imshow(roiCanvas, mat);
+                mat.delete();
+
+                // --- OCR 実行 ---
+                const { data: { text } } = await worker.recognize(roiCanvas);
+
+                // 文字のクリーニング
+                const cleanText = text.replace(/\s+/g, ' ').trim();
+                ocrResult.innerText = cleanText || "枠内に文字を捉えてください";
+
+            } catch (err) {
+                console.error(err);
+                ocrResult.innerText = "エラー: " + err.message;
+            } finally {
+                loader.classList.add('hidden');
+            }
+        };
+    </script>
+</body>
+</html>
