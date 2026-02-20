@@ -114,8 +114,13 @@
             }
         }
 
+        // --- カメラ解像度の引き上げ (1080pリクエスト) ---
         navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+            video: {
+                facingMode: 'environment',
+                width: { ideal: 1920, min: 1280 },
+                height: { ideal: 1080, min: 720 }
+            }
         }).then(s => video.srcObject = s);
 
         initOCR();
@@ -144,35 +149,46 @@
                 const roiCtx = roiCanvas.getContext('2d');
                 roiCtx.drawImage(canvas, roiX, roiY, roiW, roiH, 0, 0, roiW, roiH);
 
-                // --- OpenCV 文字補修プロセス (Otsu 二値化・最終突破版) ---
+                // --- OpenCV 文字補修プロセス (遠距離対応・アンシャープマスク版) ---
                 let mat = cv.imread(roiCanvas);
                 cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                // 1. スケーリング (適度な高解像度化, 幅1000px固定でより精細に)
-                let scale = 1000 / mat.cols;
-                let dsize = new cv.Size(1000, Math.round(mat.rows * scale));
-                cv.resize(mat, mat, dsize, 0, 0, cv.INTER_CUBIC);
+                // 1. スケーリング (1500pxに拡大：遠くの文字も大きく見せる)
+                let scale = 1500 / mat.cols;
+                let dsize = new cv.Size(1500, Math.round(mat.rows * scale));
+                cv.resize(mat, mat, dsize, 0, 0, cv.INTER_LANCZOS4);
 
-                // 2. 照明ムラ補正 (CLAHE: コントラスト制限適応ヒストグラム平滑化)
-                // スマホの影や紙の黄ばみを均等にし、Otsu二値化の精度を飛躍的に向上させる
-                let clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
+                // 2. 正規化 & コントラスト補正 (CLAHE)
+                cv.normalize(mat, mat, 0, 255, cv.NORM_MINMAX);
+                let clahe = new cv.CLAHE(3.5, new cv.Size(8, 8));
                 clahe.apply(mat, mat);
                 clahe.delete();
 
-                // 3. 強力な平滑化 (バイラテラルフィルタ)
-                // 文字の境界線（エッジ）をクッキリ残したまま、背景の不要なノイズを平滑化する
+                // 3. アンシャープマスク (Unsharp Mask)
+                // 遠くでぼやけた輪郭を、ぼかし画像との差分から強力に復元する
+                let blurred = new cv.Mat();
+                cv.GaussianBlur(mat, blurred, new cv.Size(9, 9), 2);
+                cv.addWeighted(mat, 2.0, blurred, -1.0, 0, mat); // 強めの鮮鋭化
+                blurred.delete();
+
+                // 4. エッジ保存平滑化 (バイラテラル)
                 let filtered = new cv.Mat();
-                cv.bilateralFilter(mat, filtered, 9, 75, 75, cv.BORDER_DEFAULT);
+                cv.bilateralFilter(mat, filtered, 5, 50, 50, cv.BORDER_DEFAULT);
                 mat.delete(); mat = filtered;
 
-                // 4. 大津の二値化 (Otsu's Thresholding)
-                // 適応的二値化(Adaptive)の弱点である「何もない背景部分までノイズとして拾ってしまう」現象を防ぐ
-                cv.threshold(mat, mat, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
+                // 5. ハイブリッド二値化 (Adaptive + Otsu)
+                let adaptiveMat = new cv.Mat();
+                let otsuMat = new cv.Mat();
+                cv.adaptiveThreshold(mat, adaptiveMat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 51, 15);
+                cv.threshold(mat, otsuMat, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
+                cv.bitwise_and(adaptiveMat, otsuMat, mat);
+                adaptiveMat.delete();
+                otsuMat.delete();
 
-                // 5. かすれ修復 (モルフォロジー変換：クロージング処理)
-                let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(4, 4));
-                cv.morphologyEx(mat, mat, cv.MORPH_CLOSE, M);
-                M.delete();
+                // 6. 段階的形態学処理 (クロージング)
+                let M_close = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+                cv.morphologyEx(mat, mat, cv.MORPH_CLOSE, M_close);
+                M_close.delete();
 
                 // 6. 領域抽出（文字がある部分だけを正確にクロップ）
                 let finalMat = new cv.Mat();
@@ -188,8 +204,7 @@
                             let minX = mat.cols, minY = mat.rows, maxX = 0, maxY = 0;
                             for (let i = 0; i < contours.size(); ++i) {
                                 let rect = cv.boundingRect(contours.get(i));
-                                // 極端に小さいノイズは除外してBounding Boxを計算
-                                if (rect.height > 8 && rect.width > 8) {
+                                if (rect.height > 5 && rect.width > 5) {
                                     minX = Math.min(minX, rect.x);
                                     minY = Math.min(minY, rect.y);
                                     maxX = Math.max(maxX, rect.x + rect.width);
@@ -198,8 +213,7 @@
                             }
 
                             if (maxX > minX && maxY > minY) {
-                                // 少し余裕を持たせてクロップ (padding)
-                                let pad = 10;
+                                let pad = 15;
                                 minX = Math.max(0, minX - pad);
                                 minY = Math.max(0, minY - pad);
                                 maxX = Math.min(mat.cols, maxX + pad);
@@ -223,10 +237,7 @@
                     mat.copyTo(finalMat);
                 }
 
-                // 6. 余白の追加（Tesseractは周囲に十分な余白がないと認識率が落ちる）
                 cv.copyMakeBorder(finalMat, finalMat, 40, 40, 40, 40, cv.BORDER_CONSTANT, [0, 0, 0, 255]);
-
-                // 7. 反転処理：白背景に黒文字にする (最終的にOCRエンジンが最も得意とする形式)
                 cv.bitwise_not(finalMat, finalMat);
 
                 // 8. デバッグ表示とOCR
@@ -236,7 +247,6 @@
                 mat.delete();
                 finalMat.delete();
 
-                // 結果のクリーンアップ
                 const cleanText = text.replace(/\s+/g, ' ').trim();
                 ocrResult.innerText = cleanText || "再試行してください（枠内に文字を収める）";
 
